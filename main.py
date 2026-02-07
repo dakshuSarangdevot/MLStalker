@@ -3,6 +3,7 @@ import os
 import time
 import sqlite3
 import threading
+import traceback
 
 from flask import Flask
 
@@ -26,12 +27,14 @@ from pdf2image import convert_from_path
 BOT_TOKEN = "7739387244:AAEMOHPjsZeJ95FbLjk-xoqy1LO5doYez98"
 ADMIN_ID = 8343668073
 
-URL = "https://mlsuexamination.sumsraj.com/default.aspx"
+FORM_URL = "https://mlsuexamination.sumsraj.com/Exam_ForALL_AdmitCard.aspx?id=S"
 
 DATA_DIR = "data"
 DB_FILE = "students.db"
+STATE_FILE = "state.txt"
 
 MAX_BATCH = 100
+MAX_RETRY = 3
 
 
 # =========================
@@ -59,6 +62,28 @@ conn.commit()
 
 
 # =========================
+# STATE (RESUME)
+# =========================
+
+def save_state(roll):
+    with open(STATE_FILE, "w") as f:
+        f.write(str(roll))
+
+
+def load_state():
+    if not os.path.exists(STATE_FILE):
+        return None
+
+    with open(STATE_FILE) as f:
+        return int(f.read().strip())
+
+
+def clear_state():
+    if os.path.exists(STATE_FILE):
+        os.remove(STATE_FILE)
+
+
+# =========================
 # SELENIUM
 # =========================
 
@@ -66,6 +91,7 @@ opt = Options()
 opt.add_argument("--headless=new")
 opt.add_argument("--no-sandbox")
 opt.add_argument("--disable-dev-shm-usage")
+opt.add_argument("--disable-blink-features=AutomationControlled")
 
 prefs = {
     "download.default_directory": os.path.abspath(DATA_DIR),
@@ -75,7 +101,7 @@ prefs = {
 opt.add_experimental_option("prefs", prefs)
 
 driver = webdriver.Chrome(options=opt)
-wait = WebDriverWait(driver, 40)
+wait = WebDriverWait(driver, 50)
 
 
 # =========================
@@ -84,14 +110,13 @@ wait = WebDriverWait(driver, 40)
 
 def latest_pdf():
 
-    files = os.listdir(DATA_DIR)
-    pdfs = [f for f in files if f.endswith(".pdf")]
+    pdfs = [f for f in os.listdir(DATA_DIR) if f.endswith(".pdf")]
 
     if not pdfs:
         return None
 
-    full = [os.path.join(DATA_DIR, f) for f in pdfs]
-    return max(full, key=os.path.getctime)
+    paths = [os.path.join(DATA_DIR, f) for f in pdfs]
+    return max(paths, key=os.path.getctime)
 
 
 def extract_name(pdf):
@@ -111,63 +136,24 @@ def extract_name(pdf):
 
 
 # =========================
-# SMART NAVIGATION (RETRY)
+# NAVIGATION
 # =========================
 
-def go_to_roll_page():
+def open_form():
 
-    for attempt in range(3):
+    driver.get(FORM_URL)
+    time.sleep(4)
 
-        try:
+    if "default.aspx" in driver.current_url.lower():
+        raise Exception("Redirected to homepage")
 
-            driver.get(URL)
-            time.sleep(4)
+    wait.until(EC.presence_of_element_located((
+        By.XPATH, "//input[contains(@id,'Roll')]"
+    )))
 
-
-            # Click Admit Card (View Details)
-            admit_btn = wait.until(EC.element_to_be_clickable((
-                By.XPATH,
-                "//h3[contains(text(),'Admit Card')]/../..//a"
-            )))
-            admit_btn.click()
-
-
-            # Wait for popup
-            popup = wait.until(EC.presence_of_element_located((
-                By.CLASS_NAME, "modal-content"
-            )))
-
-
-            # Click Semester Admit Card
-            sem_link = wait.until(EC.element_to_be_clickable((
-                By.XPATH,
-                "//a[contains(text(),'Semester Examination')]"
-            )))
-            sem_link.click()
-
-
-            # Wait for table
-            wait.until(EC.presence_of_element_located((
-                By.TAG_NAME, "table"
-            )))
-
-
-            # Click 7th row (BSc CBCS)
-            links = driver.find_elements(By.LINK_TEXT, "Click here")
-
-            if len(links) >= 7:
-                links[6].click()
-                time.sleep(3)
-                return True
-
-
-        except Exception as e:
-
-            print(f"Navigation failed (Try {attempt+1})")
-            time.sleep(5)
-
-
-    return False
+    wait.until(EC.presence_of_element_located((
+        By.XPATH, "//input[@type='text']"
+    )))
 
 
 # =========================
@@ -180,59 +166,40 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = f"""
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🤖  MLSU ADMIT CARD AUTOMATION BOT
+🤖 MLSU ADMIT CARD BOT (PRO)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Welcome, {name}!
 
-This bot helps you search and manage
-MLSU admit cards automatically.
-
-It is designed for fast searching,
-bulk collection, and easy sharing.
+This bot collects, stores, and
+manages MLSU admit cards.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📘 HOW TO USE
+📘 COMMAND GUIDE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-🔹 To search an admit card:
+👤 USERS
+/find <name>    → Search
+/stats          → Records
 
-   /find Rahul Sharma
-
-   (You can also use partial names)
-
-🔹 To check database size:
-
-   /stats
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-👤 USER COMMANDS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-/find <name>   → Search admit card
-/stats         → Total records
-
+👑 ADMIN
+/collect s e    → Collect
+/retry          → Retry failed
+/resume         → Resume last
+/clearstate     → Reset resume
+/block <roll>
+/unblock <roll>
+/cleardb
+/admstats
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-👑 ADMIN COMMANDS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚙️ FEATURES
 
-/collect s e   → Collect roll range
-/block roll    → Block record
-/unblock roll  → Unblock record
-/cleardb       → Clear database
-/admstats      → Admin report
-
-(Max batch: {MAX_BATCH})
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 TIPS
-
-• Use small batches for stability
-• Search by surname if needed
-• Admin collects data first
-• Users only search database
+✔ Auto resume
+✔ Retry system
+✔ Crash recovery
+✔ Progress %
+✔ Error alerts
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
@@ -244,10 +211,13 @@ bulk collection, and easy sharing.
 # COLLECT
 # =========================
 
+FAILED = []
+
+
 async def collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("🚫 Admin only command.")
+        await update.message.reply_text("🚫 Admin only.")
         return
 
     try:
@@ -259,9 +229,7 @@ async def collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
     if e - s + 1 > MAX_BATCH:
-        await update.message.reply_text(
-            f"❌ Max {MAX_BATCH} rolls allowed."
-        )
+        await update.message.reply_text(f"❌ Max {MAX_BATCH} allowed.")
         return
 
 
@@ -276,39 +244,206 @@ async def collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def run_collect(update, context, s, e):
 
-    ok = go_to_roll_page()
+    global FAILED
+    FAILED.clear()
 
-    if not ok:
+    try:
+
+        open_form()
+
+
+        total = e - s + 1
+        done = 0
+
+        start_roll = load_state() or s
+
+
+        if start_roll > s:
+            context.application.create_task(
+                update.message.reply_text(
+                    f"🔁 Resuming from {start_roll}"
+                )
+            )
+
+
+        for roll in range(start_roll, e+1):
+
+            save_state(roll)
+
+
+            success = False
+
+
+            for attempt in range(1, MAX_RETRY+1):
+
+                try:
+
+                    context.application.create_task(
+                        update.message.reply_text(
+                            f"⏳ {roll} | Try {attempt}"
+                        )
+                    )
+
+
+                    driver.find_element(
+                        By.XPATH,
+                        "//input[contains(@id,'Roll')]"
+                    ).click()
+
+
+                    box = driver.find_element(
+                        By.XPATH,
+                        "//input[@type='text']"
+                    )
+                    box.clear()
+                    box.send_keys(str(roll))
+
+
+                    driver.find_element(
+                        By.XPATH,
+                        "//input[@type='submit']"
+                    ).click()
+
+                    time.sleep(4)
+
+
+                    pdf = latest_pdf()
+
+                    if not pdf:
+                        raise Exception("PDF not downloaded")
+
+
+                    name = extract_name(pdf)
+
+
+                    images = convert_from_path(pdf, dpi=120)
+
+                    img = f"{DATA_DIR}/{roll}.jpg"
+                    images[0].save(img, "JPEG", quality=70)
+
+                    os.remove(pdf)
+
+
+                    cur.execute("""
+                    INSERT OR REPLACE INTO students
+                    VALUES (?,?,?,0)
+                    """, (str(roll), name, img))
+
+                    conn.commit()
+
+
+                    done += 1
+                    percent = int((done/total)*100)
+
+
+                    context.application.create_task(
+                        update.message.reply_text(
+                            f"✅ {done}/{total} ({percent}%) | {roll}"
+                        )
+                    )
+
+
+                    success = True
+                    break
+
+
+                except Exception as er:
+
+                    context.application.create_task(
+                        update.message.reply_text(
+                            f"⚠️ {roll} Failed ({attempt}): {er}"
+                        )
+                    )
+
+                    time.sleep(2)
+
+
+            if not success:
+
+                FAILED.append(roll)
+
+                context.application.create_task(
+                    update.message.reply_text(
+                        f"❌ {roll} Skipped after retries"
+                    )
+                )
+
+
+        clear_state()
+
 
         context.application.create_task(
-            update.message.reply_text("❌ Navigation failed. Try again later.")
+            update.message.reply_text(
+                f"🎉 Done. Failed: {len(FAILED)}"
+            )
         )
+
+
+    except Exception as e:
+
+        err = traceback.format_exc()
+
+        context.application.create_task(
+            update.message.reply_text(
+                f"🔥 CRITICAL:\n{err[:350]}"
+            )
+        )
+
+
+# =========================
+# RETRY FAILED
+# =========================
+
+async def retry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if update.effective_user.id != ADMIN_ID:
         return
 
+    if not FAILED:
+        await update.message.reply_text("✅ No failed rolls.")
+        return
 
-    total = e - s + 1
-    done = 0
+    await update.message.reply_text(f"🔁 Retrying {len(FAILED)} rolls")
+
+    threading.Thread(
+        target=retry_failed,
+        args=(update, context),
+        daemon=True
+    ).start()
 
 
-    for roll in range(s, e+1):
+def retry_failed(update, context):
+
+    global FAILED
+
+    failed_copy = FAILED.copy()
+    FAILED.clear()
+
+    for roll in failed_copy:
 
         try:
 
-            # Select Roll Option
-            wait.until(EC.element_to_be_clickable((
+            open_form()
+
+
+            driver.find_element(
                 By.XPATH,
                 "//input[contains(@id,'Roll')]"
-            ))).click()
+            ).click()
 
 
-            # Input roll
-            box = driver.find_element(By.XPATH, "//input[@type='text']")
+            box = driver.find_element(
+                By.XPATH,
+                "//input[@type='text']"
+            )
             box.clear()
             box.send_keys(str(roll))
 
 
-            # Submit
-            driver.find_element(By.XPATH, "//input[@type='submit']").click()
+            driver.find_element(
+                By.XPATH,
+                "//input[@type='submit']"
+            ).click()
 
             time.sleep(4)
 
@@ -316,10 +451,11 @@ def run_collect(update, context, s, e):
             pdf = latest_pdf()
 
             if not pdf:
-                continue
+                raise Exception("PDF missing")
 
 
             name = extract_name(pdf)
+
 
             images = convert_from_path(pdf, dpi=120)
 
@@ -337,30 +473,49 @@ def run_collect(update, context, s, e):
             conn.commit()
 
 
-            done += 1
-
-            percent = int((done / total) * 100)
-
-
-            if done % 5 == 0 or done == total:
-
-                context.application.create_task(
-                    update.message.reply_text(
-                        f"📊 Progress: {done}/{total}  ({percent}%)"
-                    )
-                )
-
-
-        except:
-
             context.application.create_task(
-                update.message.reply_text(f"⚠️ Failed {roll}")
+                update.message.reply_text(
+                    f"✅ Retried {roll}"
+                )
             )
 
 
-    context.application.create_task(
-        update.message.reply_text("✅ Collection Finished.")
+        except Exception as e:
+
+            context.application.create_task(
+                update.message.reply_text(
+                    f"❌ Retry failed {roll}"
+                )
+            )
+
+
+# =========================
+# RESUME / CLEAR
+# =========================
+
+async def resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    pos = load_state()
+
+    if not pos:
+        await update.message.reply_text("✅ Nothing to resume.")
+        return
+
+    await update.message.reply_text(
+        f"🔁 Resume available from {pos}"
     )
+
+
+async def clearstate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    clear_state()
+    await update.message.reply_text("🗑️ Resume state cleared.")
 
 
 # =========================
@@ -386,7 +541,7 @@ async def find(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
     if not row:
-        await update.message.reply_text("❌ Record not found.")
+        await update.message.reply_text("❌ No record found.")
         return
 
 
@@ -394,13 +549,13 @@ async def find(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
     if blocked == 1:
-        await update.message.reply_text("🚫 This record is restricted.")
+        await update.message.reply_text("🚫 Blocked by admin.")
         return
 
 
     await update.message.reply_photo(
         photo=open(img, "rb"),
-        caption=f"{real}\\nRoll: {roll}"
+        caption=f"{real}\nRoll: {roll}"
     )
 
 
@@ -413,9 +568,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur.execute("SELECT COUNT(*) FROM students")
     total = cur.fetchone()[0]
 
-    await update.message.reply_text(
-        f"📊 Total Records: {total}"
-    )
+    await update.message.reply_text(f"📊 Total: {total}")
 
 
 # =========================
@@ -436,9 +589,9 @@ async def admstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = f"""
 👑 ADMIN REPORT
 
-Total Records : {total}
-Blocked       : {blocked}
-Batch Limit   : {MAX_BATCH}
+Total   : {total}
+Blocked : {blocked}
+Batch   : {MAX_BATCH}
 """
 
     await update.message.reply_text(msg)
@@ -497,7 +650,7 @@ app_flask = Flask(__name__)
 
 @app_flask.route("/")
 def home():
-    return "🤖 MLSU Bot Running Successfully!"
+    return "🤖 MLSU Bot Running"
 
 
 def run_flask():
@@ -515,6 +668,9 @@ def run_bot():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("collect", collect))
+    app.add_handler(CommandHandler("retry", retry))
+    app.add_handler(CommandHandler("resume", resume))
+    app.add_handler(CommandHandler("clearstate", clearstate))
     app.add_handler(CommandHandler("find", find))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("admstats", admstats))
