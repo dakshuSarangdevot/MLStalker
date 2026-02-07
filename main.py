@@ -1,12 +1,11 @@
 
-import os
-import time
-import sqlite3
-import threading
-import traceback
+# ===============================
+# MLSU BOT - FINAL STABLE VERSION
+# ===============================
+
+import os, time, threading, sqlite3, traceback
 
 from flask import Flask
-
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
@@ -20,78 +19,99 @@ import pdfplumber
 from pdf2image import convert_from_path
 
 
-# =========================
+# ===============================
 # CONFIG
-# =========================
+# ===============================
 
 BOT_TOKEN = "7739387244:AAEMOHPjsZeJ95FbLjk-xoqy1LO5doYez98"
-ADMIN_ID = 8343668073
+SUPER_ADMIN = 8343668073
 
 FORM_URL = "https://mlsuexamination.sumsraj.com/Exam_ForALL_AdmitCard.aspx?id=S"
 
 DATA_DIR = "data"
 DB_FILE = "students.db"
-STATE_FILE = "state.txt"
+ADMIN_DB = "admins.db"
 
 MAX_BATCH = 100
 MAX_RETRY = 3
 
 
-# =========================
+# ===============================
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
 
-# =========================
-# DATABASE
-# =========================
+# ===============================
+# DATABASES
+# ===============================
 
+# Students DB
 conn = sqlite3.connect(DB_FILE, check_same_thread=False)
 cur = conn.cursor()
 
 cur.execute("""
 CREATE TABLE IF NOT EXISTS students(
-    roll TEXT PRIMARY KEY,
-    name TEXT,
-    image TEXT,
-    blocked INTEGER DEFAULT 0
+ roll TEXT PRIMARY KEY,
+ name TEXT,
+ image TEXT,
+ blocked INTEGER DEFAULT 0
 )
 """)
 
 conn.commit()
 
 
-# =========================
-# STATE (RESUME)
-# =========================
+# Admin DB
+acon = sqlite3.connect(ADMIN_DB, check_same_thread=False)
+acur = acon.cursor()
 
-def save_state(roll):
-    with open(STATE_FILE, "w") as f:
-        f.write(str(roll))
+acur.execute("""
+CREATE TABLE IF NOT EXISTS admins(
+ id INTEGER PRIMARY KEY
+)
+""")
 
-
-def load_state():
-    if not os.path.exists(STATE_FILE):
-        return None
-
-    with open(STATE_FILE) as f:
-        return int(f.read().strip())
+# Insert super admin
+acur.execute("INSERT OR IGNORE INTO admins VALUES(?)", (SUPER_ADMIN,))
+acon.commit()
 
 
-def clear_state():
-    if os.path.exists(STATE_FILE):
-        os.remove(STATE_FILE)
+# ===============================
+# ADMIN HELPERS
+# ===============================
+
+def is_admin(uid):
+    acur.execute("SELECT 1 FROM admins WHERE id=?", (uid,))
+    return acur.fetchone() is not None
 
 
-# =========================
+def add_admin(uid):
+    acur.execute("INSERT OR IGNORE INTO admins VALUES(?)", (uid,))
+    acon.commit()
+
+
+def remove_admin(uid):
+    if uid == SUPER_ADMIN:
+        return False
+
+    acur.execute("DELETE FROM admins WHERE id=?", (uid,))
+    acon.commit()
+    return True
+
+
+def list_admins():
+    acur.execute("SELECT id FROM admins")
+    return [i[0] for i in acur.fetchall()]
+
+
+# ===============================
 # SELENIUM
-# =========================
+# ===============================
 
 opt = Options()
 opt.add_argument("--headless=new")
 opt.add_argument("--no-sandbox")
 opt.add_argument("--disable-dev-shm-usage")
-opt.add_argument("--disable-blink-features=AutomationControlled")
 
 prefs = {
     "download.default_directory": os.path.abspath(DATA_DIR),
@@ -101,21 +121,19 @@ prefs = {
 opt.add_experimental_option("prefs", prefs)
 
 driver = webdriver.Chrome(options=opt)
-wait = WebDriverWait(driver, 50)
+wait = WebDriverWait(driver, 40)
 
 
-# =========================
+# ===============================
 # HELPERS
-# =========================
+# ===============================
 
 def latest_pdf():
-
-    pdfs = [f for f in os.listdir(DATA_DIR) if f.endswith(".pdf")]
-
-    if not pdfs:
+    files = [f for f in os.listdir(DATA_DIR) if f.endswith(".pdf")]
+    if not files:
         return None
 
-    paths = [os.path.join(DATA_DIR, f) for f in pdfs]
+    paths = [os.path.join(DATA_DIR, f) for f in files]
     return max(paths, key=os.path.getctime)
 
 
@@ -135,188 +153,179 @@ def extract_name(pdf):
     return "Unknown"
 
 
-# =========================
-# NAVIGATION
-# =========================
-
 def open_form():
 
     driver.get(FORM_URL)
     time.sleep(4)
 
-    if "default.aspx" in driver.current_url.lower():
+    if "default" in driver.current_url.lower():
         raise Exception("Redirected to homepage")
 
     wait.until(EC.presence_of_element_located((
         By.XPATH, "//input[contains(@id,'Roll')]"
     )))
 
-    wait.until(EC.presence_of_element_located((
-        By.XPATH, "//input[@type='text']"
-    )))
 
-
-# =========================
+# ===============================
 # START
-# =========================
+# ===============================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    name = update.effective_user.first_name
+    msg = """
+━━━━━━━━━━━━━━━━━━━━━━
+🤖 MLSU BOT (STABLE)
+━━━━━━━━━━━━━━━━━━━━━━
 
-    msg = f"""
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🤖 MLSU ADMIT CARD BOT (PRO)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Welcome, {name}!
-
-This bot collects, stores, and
-manages MLSU admit cards.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📘 COMMAND GUIDE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-👤 USERS
-/find <name>    → Search
-/stats          → Records
+👤 USER
+/find <name>
+/stats
 
 👑 ADMIN
-/collect s e    → Collect
-/retry          → Retry failed
-/resume         → Resume last
-/clearstate     → Reset resume
+/collect s e
+/makeadmin <id>
+/removeadmin <id>
+/adminlist
 /block <roll>
 /unblock <roll>
-/cleardb
-/admstats
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⚙️ FEATURES
+⚙ FEATURES
+✔ Multi Admin
+✔ % Progress
+✔ Error Logs
+✔ Stable
 
-✔ Auto resume
-✔ Retry system
-✔ Crash recovery
-✔ Progress %
-✔ Error alerts
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━
 """
 
     await update.message.reply_text(msg)
 
 
-# =========================
+# ===============================
+# ADMIN COMMANDS
+# ===============================
+
+async def makeadmin(update, context):
+
+    if update.effective_user.id != SUPER_ADMIN:
+        await update.message.reply_text("🚫 Only owner can add admins")
+        return
+
+    try:
+        uid = int(context.args[0])
+    except:
+        await update.message.reply_text("/makeadmin <id>")
+        return
+
+    add_admin(uid)
+
+    await update.message.reply_text(f"✅ {uid} is now admin")
+
+
+async def removeadmin(update, context):
+
+    if update.effective_user.id != SUPER_ADMIN:
+        return
+
+    try:
+        uid = int(context.args[0])
+    except:
+        return
+
+    if remove_admin(uid):
+        await update.message.reply_text("✅ Removed")
+    else:
+        await update.message.reply_text("❌ Cannot remove owner")
+
+
+async def adminlist(update, context):
+
+    if not is_admin(update.effective_user.id):
+        return
+
+    admins = list_admins()
+
+    txt = "👑 ADMINS:\n" + "\n".join(map(str, admins))
+
+    await update.message.reply_text(txt)
+
+
+# ===============================
 # COLLECT
-# =========================
+# ===============================
 
-FAILED = []
+async def collect(update, context):
 
+    uid = update.effective_user.id
 
-async def collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("🚫 Admin only.")
+    if not is_admin(uid):
+        await update.message.reply_text("🚫 Admin only")
         return
 
     try:
         s = int(context.args[0])
         e = int(context.args[1])
     except:
-        await update.message.reply_text("❌ /collect 230001 230050")
+        await update.message.reply_text("/collect 230001 230050")
         return
-
 
     if e - s + 1 > MAX_BATCH:
-        await update.message.reply_text(f"❌ Max {MAX_BATCH} allowed.")
+        await update.message.reply_text("❌ Batch too large")
         return
 
-
-    await update.message.reply_text("📥 Collection started...")
+    await update.message.reply_text("📥 Collection started")
 
     threading.Thread(
         target=run_collect,
-        args=(update, context, s, e),
+        args=(context.application, update.effective_chat.id, s, e),
         daemon=True
     ).start()
 
 
-def run_collect(update, context, s, e):
-
-    global FAILED
-    FAILED.clear()
+def run_collect(app, chat, s, e):
 
     try:
 
         open_form()
 
-
         total = e - s + 1
         done = 0
+        last_percent = -1
 
-        start_roll = load_state() or s
-
-
-        if start_roll > s:
-            context.application.create_task(
-                update.message.reply_text(
-                    f"🔁 Resuming from {start_roll}"
-                )
-            )
-
-
-        for roll in range(start_roll, e+1):
-
-            save_state(roll)
-
+        for roll in range(s, e+1):
 
             success = False
-
 
             for attempt in range(1, MAX_RETRY+1):
 
                 try:
 
-                    context.application.create_task(
-                        update.message.reply_text(
-                            f"⏳ {roll} | Try {attempt}"
-                        )
-                    )
-
-
                     driver.find_element(
-                        By.XPATH,
-                        "//input[contains(@id,'Roll')]"
+                        By.XPATH, "//input[contains(@id,'Roll')]"
                     ).click()
 
-
                     box = driver.find_element(
-                        By.XPATH,
-                        "//input[@type='text']"
+                        By.XPATH, "//input[@type='text']"
                     )
+
                     box.clear()
                     box.send_keys(str(roll))
 
-
                     driver.find_element(
-                        By.XPATH,
-                        "//input[@type='submit']"
+                        By.XPATH, "//input[@type='submit']"
                     ).click()
 
                     time.sleep(4)
 
-
                     pdf = latest_pdf()
 
                     if not pdf:
-                        raise Exception("PDF not downloaded")
+                        raise Exception("PDF not found")
 
 
                     name = extract_name(pdf)
 
-
-                    images = convert_from_path(pdf, dpi=120)
+                    images = convert_from_path(pdf, dpi=110)
 
                     img = f"{DATA_DIR}/{roll}.jpg"
                     images[0].save(img, "JPEG", quality=70)
@@ -327,7 +336,7 @@ def run_collect(update, context, s, e):
                     cur.execute("""
                     INSERT OR REPLACE INTO students
                     VALUES (?,?,?,0)
-                    """, (str(roll), name, img))
+                    """, (roll, name, img))
 
                     conn.commit()
 
@@ -336,11 +345,14 @@ def run_collect(update, context, s, e):
                     percent = int((done/total)*100)
 
 
-                    context.application.create_task(
-                        update.message.reply_text(
-                            f"✅ {done}/{total} ({percent}%) | {roll}"
+                    if done % 5 == 0 or percent != last_percent:
+
+                        app.bot.send_message(
+                            chat_id=chat,
+                            text=f"📊 {done}/{total} ({percent}%)"
                         )
-                    )
+
+                        last_percent = percent
 
 
                     success = True
@@ -349,276 +361,41 @@ def run_collect(update, context, s, e):
 
                 except Exception as er:
 
-                    context.application.create_task(
-                        update.message.reply_text(
-                            f"⚠️ {roll} Failed ({attempt}): {er}"
+                    if attempt == MAX_RETRY:
+
+                        app.bot.send_message(
+                            chat_id=chat,
+                            text=f"❌ {roll} Failed: {er}"
                         )
-                    )
 
                     time.sleep(2)
 
 
             if not success:
-
-                FAILED.append(roll)
-
-                context.application.create_task(
-                    update.message.reply_text(
-                        f"❌ {roll} Skipped after retries"
-                    )
-                )
+                continue
 
 
-        clear_state()
-
-
-        context.application.create_task(
-            update.message.reply_text(
-                f"🎉 Done. Failed: {len(FAILED)}"
-            )
+        app.bot.send_message(
+            chat_id=chat,
+            text="✅ Collection completed"
         )
 
 
     except Exception as e:
 
-        err = traceback.format_exc()
-
-        context.application.create_task(
-            update.message.reply_text(
-                f"🔥 CRITICAL:\n{err[:350]}"
-            )
+        app.bot.send_message(
+            chat_id=chat,
+            text=f"🔥 ERROR:\n{str(e)}"
         )
 
 
-# =========================
-# RETRY FAILED
-# =========================
-
-async def retry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    if not FAILED:
-        await update.message.reply_text("✅ No failed rolls.")
-        return
-
-    await update.message.reply_text(f"🔁 Retrying {len(FAILED)} rolls")
-
-    threading.Thread(
-        target=retry_failed,
-        args=(update, context),
-        daemon=True
-    ).start()
-
-
-def retry_failed(update, context):
-
-    global FAILED
-
-    failed_copy = FAILED.copy()
-    FAILED.clear()
-
-    for roll in failed_copy:
-
-        try:
-
-            open_form()
-
-
-            driver.find_element(
-                By.XPATH,
-                "//input[contains(@id,'Roll')]"
-            ).click()
-
-
-            box = driver.find_element(
-                By.XPATH,
-                "//input[@type='text']"
-            )
-            box.clear()
-            box.send_keys(str(roll))
-
-
-            driver.find_element(
-                By.XPATH,
-                "//input[@type='submit']"
-            ).click()
-
-            time.sleep(4)
-
-
-            pdf = latest_pdf()
-
-            if not pdf:
-                raise Exception("PDF missing")
-
-
-            name = extract_name(pdf)
-
-
-            images = convert_from_path(pdf, dpi=120)
-
-            img = f"{DATA_DIR}/{roll}.jpg"
-            images[0].save(img, "JPEG", quality=70)
-
-            os.remove(pdf)
-
-
-            cur.execute("""
-            INSERT OR REPLACE INTO students
-            VALUES (?,?,?,0)
-            """, (str(roll), name, img))
-
-            conn.commit()
-
-
-            context.application.create_task(
-                update.message.reply_text(
-                    f"✅ Retried {roll}"
-                )
-            )
-
-
-        except Exception as e:
-
-            context.application.create_task(
-                update.message.reply_text(
-                    f"❌ Retry failed {roll}"
-                )
-            )
-
-
-# =========================
-# RESUME / CLEAR
-# =========================
-
-async def resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    pos = load_state()
-
-    if not pos:
-        await update.message.reply_text("✅ Nothing to resume.")
-        return
-
-    await update.message.reply_text(
-        f"🔁 Resume available from {pos}"
-    )
-
-
-async def clearstate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    clear_state()
-    await update.message.reply_text("🗑️ Resume state cleared.")
-
-
-# =========================
-# FIND
-# =========================
-
-async def find(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    name = " ".join(context.args)
-
-    if not name:
-        await update.message.reply_text("❌ /find Rahul")
-        return
-
-
-    cur.execute("""
-    SELECT image,roll,name,blocked
-    FROM students
-    WHERE name LIKE ?
-    """, (f"%{name}%",))
-
-    row = cur.fetchone()
-
-
-    if not row:
-        await update.message.reply_text("❌ No record found.")
-        return
-
-
-    img, roll, real, blocked = row
-
-
-    if blocked == 1:
-        await update.message.reply_text("🚫 Blocked by admin.")
-        return
-
-
-    await update.message.reply_photo(
-        photo=open(img, "rb"),
-        caption=f"{real}\nRoll: {roll}"
-    )
-
-
-# =========================
-# STATS
-# =========================
-
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    cur.execute("SELECT COUNT(*) FROM students")
-    total = cur.fetchone()[0]
-
-    await update.message.reply_text(f"📊 Total: {total}")
-
-
-# =========================
-# ADMIN STATS
-# =========================
-
-async def admstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    cur.execute("SELECT COUNT(*) FROM students")
-    total = cur.fetchone()[0]
-
-    cur.execute("SELECT COUNT(*) FROM students WHERE blocked=1")
-    blocked = cur.fetchone()[0]
-
-    msg = f"""
-👑 ADMIN REPORT
-
-Total   : {total}
-Blocked : {blocked}
-Batch   : {MAX_BATCH}
-"""
-
-    await update.message.reply_text(msg)
-
-
-# =========================
-# CLEAR DB
-# =========================
-
-async def cleardb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    cur.execute("DELETE FROM students")
-    conn.commit()
-
-    await update.message.reply_text("🗑️ Database cleared.")
-
-
-# =========================
+# ===============================
 # BLOCK / UNBLOCK
-# =========================
+# ===============================
 
-async def block(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def block(update, context):
 
-    if update.effective_user.id != ADMIN_ID:
+    if not is_admin(update.effective_user.id):
         return
 
     roll = context.args[0]
@@ -626,12 +403,12 @@ async def block(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur.execute("UPDATE students SET blocked=1 WHERE roll=?", (roll,))
     conn.commit()
 
-    await update.message.reply_text(f"🚫 {roll} BLOCKED")
+    await update.message.reply_text("🚫 Blocked")
 
 
-async def unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def unblock(update, context):
 
-    if update.effective_user.id != ADMIN_ID:
+    if not is_admin(update.effective_user.id):
         return
 
     roll = context.args[0]
@@ -639,56 +416,102 @@ async def unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur.execute("UPDATE students SET blocked=0 WHERE roll=?", (roll,))
     conn.commit()
 
-    await update.message.reply_text(f"✅ {roll} UNBLOCKED")
+    await update.message.reply_text("✅ Unblocked")
 
 
-# =========================
+# ===============================
+# FIND / STATS
+# ===============================
+
+async def find(update, context):
+
+    name = " ".join(context.args)
+
+    if not name:
+        return
+
+    cur.execute("""
+    SELECT image,roll,name,blocked
+    FROM students
+    WHERE name LIKE ?
+    """, (f"%{name}%",))
+
+    r = cur.fetchone()
+
+    if not r:
+        await update.message.reply_text("❌ Not found")
+        return
+
+    img, roll, nm, blk = r
+
+    if blk:
+        await update.message.reply_text("🚫 Blocked")
+        return
+
+    await update.message.reply_photo(
+        open(img, "rb"),
+        caption=f"{nm}\nRoll: {roll}"
+    )
+
+
+async def stats(update, context):
+
+    cur.execute("SELECT COUNT(*) FROM students")
+
+    await update.message.reply_text(
+        f"📊 Total: {cur.fetchone()[0]}"
+    )
+
+
+# ===============================
 # FLASK
-# =========================
+# ===============================
 
-app_flask = Flask(__name__)
+appf = Flask(__name__)
 
-@app_flask.route("/")
+
+@appf.route("/")
 def home():
-    return "🤖 MLSU Bot Running"
+    return "Bot Running"
 
 
 def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app_flask.run(host="0.0.0.0", port=port)
+    p = int(os.environ.get("PORT", 10000))
+    appf.run(host="0.0.0.0", port=p)
 
 
-# =========================
+# ===============================
 # BOT
-# =========================
+# ===============================
 
-def run_bot():
+def main():
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("makeadmin", makeadmin))
+    app.add_handler(CommandHandler("removeadmin", removeadmin))
+    app.add_handler(CommandHandler("adminlist", adminlist))
+
     app.add_handler(CommandHandler("collect", collect))
-    app.add_handler(CommandHandler("retry", retry))
-    app.add_handler(CommandHandler("resume", resume))
-    app.add_handler(CommandHandler("clearstate", clearstate))
-    app.add_handler(CommandHandler("find", find))
-    app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(CommandHandler("admstats", admstats))
-    app.add_handler(CommandHandler("cleardb", cleardb))
     app.add_handler(CommandHandler("block", block))
     app.add_handler(CommandHandler("unblock", unblock))
 
-    print("🤖 Bot Running...")
+    app.add_handler(CommandHandler("find", find))
+    app.add_handler(CommandHandler("stats", stats))
+
+    print("🤖 BOT RUNNING")
 
     app.run_polling()
 
 
-# =========================
+# ===============================
 # MAIN
-# =========================
+# ===============================
 
 if __name__ == "__main__":
 
     threading.Thread(target=run_flask, daemon=True).start()
 
-    run_bot()
+    main()
+
