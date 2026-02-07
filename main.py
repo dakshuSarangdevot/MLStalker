@@ -26,7 +26,7 @@ from pdf2image import convert_from_path
 BOT_TOKEN = "7739387244:AAEMOHPjsZeJ95FbLjk-xoqy1LO5doYez98"
 ADMIN_ID = 8343668073
 
-URL = "https://mlsuexamination.sumsraj.com/"
+URL = "https://mlsuexamination.sumsraj.com/default.aspx"
 
 DATA_DIR = "data"
 DB_FILE = "students.db"
@@ -75,9 +75,7 @@ prefs = {
 opt.add_experimental_option("prefs", prefs)
 
 driver = webdriver.Chrome(options=opt)
-wait = WebDriverWait(driver, 20)
-
-driver.get(URL)
+wait = WebDriverWait(driver, 40)
 
 
 # =========================
@@ -113,29 +111,67 @@ def extract_name(pdf):
 
 
 # =========================
-# NAVIGATION
+# SMART NAVIGATION (RETRY)
 # =========================
 
 def go_to_roll_page():
 
-    driver.get(URL)
+    for attempt in range(3):
 
-    sem = wait.until(EC.element_to_be_clickable((
-        By.XPATH,
-        "//h3[contains(text(),'Semester Examination Form')]/../..//a"
-    )))
-    sem.click()
+        try:
 
-    wait.until(EC.presence_of_element_located((By.TAG_NAME, "table")))
+            driver.get(URL)
+            time.sleep(4)
 
-    links = driver.find_elements(By.LINK_TEXT, "Click here")
-    links[6].click()
 
-    time.sleep(3)
+            # Click Admit Card (View Details)
+            admit_btn = wait.until(EC.element_to_be_clickable((
+                By.XPATH,
+                "//h3[contains(text(),'Admit Card')]/../..//a"
+            )))
+            admit_btn.click()
+
+
+            # Wait for popup
+            popup = wait.until(EC.presence_of_element_located((
+                By.CLASS_NAME, "modal-content"
+            )))
+
+
+            # Click Semester Admit Card
+            sem_link = wait.until(EC.element_to_be_clickable((
+                By.XPATH,
+                "//a[contains(text(),'Semester Examination')]"
+            )))
+            sem_link.click()
+
+
+            # Wait for table
+            wait.until(EC.presence_of_element_located((
+                By.TAG_NAME, "table"
+            )))
+
+
+            # Click 7th row (BSc CBCS)
+            links = driver.find_elements(By.LINK_TEXT, "Click here")
+
+            if len(links) >= 7:
+                links[6].click()
+                time.sleep(3)
+                return True
+
+
+        except Exception as e:
+
+            print(f"Navigation failed (Try {attempt+1})")
+            time.sleep(5)
+
+
+    return False
 
 
 # =========================
-# START COMMAND
+# START
 # =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -144,55 +180,60 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = f"""
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🤖  MLSU ADMIT CARD BOT
+🤖  MLSU ADMIT CARD AUTOMATION BOT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-👋 Welcome, {name}!
+Welcome, {name}!
 
-This bot helps you instantly find
-and download MLSU admit cards.
+This bot helps you search and manage
+MLSU admit cards automatically.
+
+It is designed for fast searching,
+bulk collection, and easy sharing.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📌 HOW TO USE
+📘 HOW TO USE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-1️⃣ Type:
+🔹 To search an admit card:
+
    /find Rahul Sharma
 
-2️⃣ Bot will search database
+   (You can also use partial names)
 
-3️⃣ If found → Admit Card sent
+🔹 To check database size:
 
-⚡ Fast • Secure • 24/7
+   /stats
+
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 👤 USER COMMANDS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-🔍 /find <name>   → Search admit card
-📊 /stats         → Total records
+/find <name>   → Search admit card
+/stats         → Total records
+
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 👑 ADMIN COMMANDS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-📥 /collect s e   → Download data
-🚫 /block roll    → Block record
-✅ /unblock roll  → Unblock record
-🗑️ /cleardb       → Delete database
-📊 /admstats      → Admin stats
+/collect s e   → Collect roll range
+/block roll    → Block record
+/unblock roll  → Unblock record
+/cleardb       → Clear database
+/admstats      → Admin report
 
-(Max Batch: {MAX_BATCH})
+(Max batch: {MAX_BATCH})
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 Tip:
-Search by partial name if full
-name doesn't match.
+💡 TIPS
 
-Example:
-/find Sharma
+• Use small batches for stability
+• Search by surname if needed
+• Admin collects data first
+• Users only search database
 
-Best of Luck for Exams 🍀📚
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
@@ -235,7 +276,15 @@ async def collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def run_collect(update, context, s, e):
 
-    go_to_roll_page()
+    ok = go_to_roll_page()
+
+    if not ok:
+
+        context.application.create_task(
+            update.message.reply_text("❌ Navigation failed. Try again later.")
+        )
+        return
+
 
     total = e - s + 1
     done = 0
@@ -245,15 +294,20 @@ def run_collect(update, context, s, e):
 
         try:
 
+            # Select Roll Option
             wait.until(EC.element_to_be_clickable((
                 By.XPATH,
                 "//input[contains(@id,'Roll')]"
             ))).click()
 
+
+            # Input roll
             box = driver.find_element(By.XPATH, "//input[@type='text']")
             box.clear()
             box.send_keys(str(roll))
 
+
+            # Submit
             driver.find_element(By.XPATH, "//input[@type='submit']").click()
 
             time.sleep(4)
@@ -285,12 +339,14 @@ def run_collect(update, context, s, e):
 
             done += 1
 
+            percent = int((done / total) * 100)
+
 
             if done % 5 == 0 or done == total:
 
                 context.application.create_task(
                     update.message.reply_text(
-                        f"✅ Progress: {done}/{total}"
+                        f"📊 Progress: {done}/{total}  ({percent}%)"
                     )
                 )
 
@@ -303,7 +359,7 @@ def run_collect(update, context, s, e):
 
 
     context.application.create_task(
-        update.message.reply_text("🎉 Collection Completed!")
+        update.message.reply_text("✅ Collection Finished.")
     )
 
 
@@ -344,7 +400,7 @@ async def find(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_photo(
         photo=open(img, "rb"),
-        caption=f"{real}\nRoll: {roll}"
+        caption=f"{real}\\nRoll: {roll}"
     )
 
 
@@ -380,9 +436,9 @@ async def admstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = f"""
 👑 ADMIN REPORT
 
-📄 Total Records : {total}
-🚫 Blocked       : {blocked}
-⚡ Batch Limit   : {MAX_BATCH}
+Total Records : {total}
+Blocked       : {blocked}
+Batch Limit   : {MAX_BATCH}
 """
 
     await update.message.reply_text(msg)
