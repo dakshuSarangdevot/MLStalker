@@ -31,6 +31,8 @@ URL = "https://mlsuexamination.sumsraj.com/"
 DATA_DIR = "data"
 DB_FILE = "students.db"
 
+MAX_BATCH = 100
+
 
 # =========================
 
@@ -133,26 +135,65 @@ def go_to_roll_page():
 
 
 # =========================
-# COMMANDS
+# START COMMAND
 # =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    user = update.effective_user.first_name
+    name = update.effective_user.first_name
 
     msg = f"""
-✨━━━━━━━━━━━━━━━━✨
-🤖 WELCOME {user.upper()}
-✨━━━━━━━━━━━━━━━━✨
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🤖  MLSU ADMIT CARD BOT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-📚 Admit Card Bot
+👋 Welcome, {name}!
 
-🔍 /find Name
-📥 /collect start end
-🚫 /block roll
-✅ /unblock roll
+This bot helps you instantly find
+and download MLSU admit cards.
 
-Good Luck 🍀
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 HOW TO USE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1️⃣ Type:
+   /find Rahul Sharma
+
+2️⃣ Bot will search database
+
+3️⃣ If found → Admit Card sent
+
+⚡ Fast • Secure • 24/7
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+👤 USER COMMANDS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔍 /find <name>   → Search admit card
+📊 /stats         → Total records
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+👑 ADMIN COMMANDS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📥 /collect s e   → Download data
+🚫 /block roll    → Block record
+✅ /unblock roll  → Unblock record
+🗑️ /cleardb       → Delete database
+📊 /admstats      → Admin stats
+
+(Max Batch: {MAX_BATCH})
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 Tip:
+Search by partial name if full
+name doesn't match.
+
+Example:
+/find Sharma
+
+Best of Luck for Exams 🍀📚
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
     await update.message.reply_text(msg)
@@ -165,20 +206,39 @@ Good Luck 🍀
 async def collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("🚫 Admin only.")
+        await update.message.reply_text("🚫 Admin only command.")
         return
 
     try:
         s = int(context.args[0])
         e = int(context.args[1])
     except:
-        await update.message.reply_text("/collect 230001 230050")
+        await update.message.reply_text("❌ /collect 230001 230050")
         return
 
 
-    await update.message.reply_text("📥 Collecting...")
+    if e - s + 1 > MAX_BATCH:
+        await update.message.reply_text(
+            f"❌ Max {MAX_BATCH} rolls allowed."
+        )
+        return
+
+
+    await update.message.reply_text("📥 Collection started...")
+
+    threading.Thread(
+        target=run_collect,
+        args=(update, context, s, e),
+        daemon=True
+    ).start()
+
+
+def run_collect(update, context, s, e):
 
     go_to_roll_page()
+
+    total = e - s + 1
+    done = 0
 
 
     for roll in range(s, e+1):
@@ -196,7 +256,7 @@ async def collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             driver.find_element(By.XPATH, "//input[@type='submit']").click()
 
-            time.sleep(6)
+            time.sleep(4)
 
 
             pdf = latest_pdf()
@@ -207,10 +267,10 @@ async def collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             name = extract_name(pdf)
 
-            images = convert_from_path(pdf)
+            images = convert_from_path(pdf, dpi=120)
 
             img = f"{DATA_DIR}/{roll}.jpg"
-            images[0].save(img, "JPEG")
+            images[0].save(img, "JPEG", quality=70)
 
             os.remove(pdf)
 
@@ -223,16 +283,28 @@ async def collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
             conn.commit()
 
 
-            await update.message.reply_text(
-                f"✅ {roll} - {name}"
-            )
+            done += 1
+
+
+            if done % 5 == 0 or done == total:
+
+                context.application.create_task(
+                    update.message.reply_text(
+                        f"✅ Progress: {done}/{total}"
+                    )
+                )
 
 
         except:
-            await update.message.reply_text(f"⚠️ Failed {roll}")
+
+            context.application.create_task(
+                update.message.reply_text(f"⚠️ Failed {roll}")
+            )
 
 
-    await update.message.reply_text("🎉 Done!")
+    context.application.create_task(
+        update.message.reply_text("🎉 Collection Completed!")
+    )
 
 
 # =========================
@@ -241,31 +313,11 @@ async def collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def find(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    user = update.effective_user
-
     name = " ".join(context.args)
 
     if not name:
-        await update.message.reply_text("/find Rahul")
+        await update.message.reply_text("❌ /find Rahul")
         return
-
-
-    alert = f"""
-🔔 SEARCH ALERT
-
-User: @{user.username}
-ID: {user.id}
-
-Search: {name}
-"""
-
-    try:
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=alert
-        )
-    except:
-        pass
 
 
     cur.execute("""
@@ -278,7 +330,7 @@ Search: {name}
 
 
     if not row:
-        await update.message.reply_text("❌ Not found")
+        await update.message.reply_text("❌ Record not found.")
         return
 
 
@@ -292,85 +344,104 @@ Search: {name}
 
     await update.message.reply_photo(
         photo=open(img, "rb"),
-        caption=f"{real}\\nRoll: {roll}"
+        caption=f"{real}\nRoll: {roll}"
     )
 
 
 # =========================
-# BLOCK
+# STATS
+# =========================
+
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    cur.execute("SELECT COUNT(*) FROM students")
+    total = cur.fetchone()[0]
+
+    await update.message.reply_text(
+        f"📊 Total Records: {total}"
+    )
+
+
+# =========================
+# ADMIN STATS
+# =========================
+
+async def admstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    cur.execute("SELECT COUNT(*) FROM students")
+    total = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM students WHERE blocked=1")
+    blocked = cur.fetchone()[0]
+
+    msg = f"""
+👑 ADMIN REPORT
+
+📄 Total Records : {total}
+🚫 Blocked       : {blocked}
+⚡ Batch Limit   : {MAX_BATCH}
+"""
+
+    await update.message.reply_text(msg)
+
+
+# =========================
+# CLEAR DB
+# =========================
+
+async def cleardb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    cur.execute("DELETE FROM students")
+    conn.commit()
+
+    await update.message.reply_text("🗑️ Database cleared.")
+
+
+# =========================
+# BLOCK / UNBLOCK
 # =========================
 
 async def block(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("🚫 Admin only.")
         return
-
-
-    if not context.args:
-        await update.message.reply_text("/block 8098")
-        return
-
 
     roll = context.args[0]
 
-    cur.execute("""
-    UPDATE students
-    SET blocked = 1
-    WHERE roll = ?
-    """, (roll,))
-
+    cur.execute("UPDATE students SET blocked=1 WHERE roll=?", (roll,))
     conn.commit()
 
+    await update.message.reply_text(f"🚫 {roll} BLOCKED")
 
-    if cur.rowcount == 0:
-        await update.message.reply_text("❌ Roll not found.")
-    else:
-        await update.message.reply_text(f"✅ {roll} BLOCKED.")
-
-
-# =========================
-# UNBLOCK
-# =========================
 
 async def unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("🚫 Admin only.")
         return
-
-
-    if not context.args:
-        await update.message.reply_text("/unblock 8098")
-        return
-
 
     roll = context.args[0]
 
-    cur.execute("""
-    UPDATE students
-    SET blocked = 0
-    WHERE roll = ?
-    """, (roll,))
-
+    cur.execute("UPDATE students SET blocked=0 WHERE roll=?", (roll,))
     conn.commit()
 
-
-    if cur.rowcount == 0:
-        await update.message.reply_text("❌ Roll not found.")
-    else:
-        await update.message.reply_text(f"✅ {roll} UNBLOCKED.")
+    await update.message.reply_text(f"✅ {roll} UNBLOCKED")
 
 
 # =========================
-# FLASK (FOR RENDER)
+# FLASK
 # =========================
 
 app_flask = Flask(__name__)
 
 @app_flask.route("/")
 def home():
-    return "🤖 Bot is Running!"
+    return "🤖 MLSU Bot Running Successfully!"
 
 
 def run_flask():
@@ -389,6 +460,9 @@ def run_bot():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("collect", collect))
     app.add_handler(CommandHandler("find", find))
+    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("admstats", admstats))
+    app.add_handler(CommandHandler("cleardb", cleardb))
     app.add_handler(CommandHandler("block", block))
     app.add_handler(CommandHandler("unblock", unblock))
 
@@ -403,7 +477,6 @@ def run_bot():
 
 if __name__ == "__main__":
 
-    t = threading.Thread(target=run_flask)
-    t.start()
+    threading.Thread(target=run_flask, daemon=True).start()
 
     run_bot()
