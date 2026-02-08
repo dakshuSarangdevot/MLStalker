@@ -24,7 +24,7 @@ from selenium.common.exceptions import ElementClickInterceptedException
 # CONFIG
 # =========================================
 
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+BOT_TOKEN = "7739387244:AAEMOHPjsZeJ95FbLjk-xoqy1LO5doYez98"
 
 HOME_URL = "https://mlsuexamination.sumsraj.com/default.aspx"
 
