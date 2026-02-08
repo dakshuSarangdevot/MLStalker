@@ -1,9 +1,14 @@
 
 # ===============================
-# MLSU NAVIGATION TEST BOT
+# MLSU NAVIGATION TEST BOT (FIXED)
 # ===============================
 
+import os
 import time
+import threading
+
+from flask import Flask
+
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
@@ -21,6 +26,22 @@ from selenium.webdriver.support import expected_conditions as EC
 BOT_TOKEN = "7739387244:AAEMOHPjsZeJ95FbLjk-xoqy1LO5doYez98"
 
 FORM_URL = "https://mlsuexamination.sumsraj.com/Exam_ForALL_AdmitCard.aspx?id=S"
+
+
+# ===============================
+# FLASK (KEEP RENDER ALIVE)
+# ===============================
+
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Test Bot Running"
+
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
 
 
 # ===============================
@@ -45,7 +66,7 @@ def test_navigation():
     try:
 
         driver.get(FORM_URL)
-        time.sleep(4)
+        time.sleep(5)
 
 
         # Check redirect
@@ -53,7 +74,7 @@ def test_navigation():
             return False, "Redirected to homepage"
 
 
-        # Check roll radio
+        # Check roll option
         wait.until(EC.presence_of_element_located((
             By.XPATH, "//input[contains(@id,'Roll')]"
         )))
@@ -65,7 +86,7 @@ def test_navigation():
         )))
 
 
-        return True, "Navigation OK. Form detected."
+        return True, "Navigation OK. Roll form detected."
 
 
     except Exception as e:
@@ -84,11 +105,8 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ok, msg = test_navigation()
 
     if ok:
-
         await update.message.reply_text(f"✅ SUCCESS\n{msg}")
-
     else:
-
         await update.message.reply_text(f"❌ FAILED\n{msg}")
 
 
@@ -98,13 +116,13 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app_bot = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("test", test))
+    app_bot.add_handler(CommandHandler("test", test))
 
     print("🤖 Test Bot Running...")
 
-    app.run_polling()
+    app_bot.run_polling()
 
 
 # ===============================
@@ -113,4 +131,9 @@ def main():
 
 if __name__ == "__main__":
 
+    # Start Flask for Render
+    threading.Thread(target=run_flask, daemon=True).start()
+
+    # Start Telegram Bot
     main()
+
