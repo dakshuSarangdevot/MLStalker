@@ -18,7 +18,9 @@ from telegram.ext import (
 
 # ================= CONFIG =================
 
-BOT_TOKEN = "7739387244:AAEMOHPjsZeJ95FbLjk-xoqy1LO5doYez98"
+# ⚠️ Put your real token in Render Environment Variable
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
 OWNER_ID = 8343668073
 
 DB_FILE = "data.db"
@@ -160,7 +162,7 @@ async def worker():
 
 # =============== COMMANDS =================
 
-async def start(update, context):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     txt = """
 🤖 MLSU Admit Card Bot
@@ -182,7 +184,7 @@ async def start(update, context):
     await update.message.reply_text(txt)
 
 
-async def find(update, context):
+async def find(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not context.args:
         return await update.message.reply_text("Use: /find <roll/name>")
@@ -216,7 +218,7 @@ async def find(update, context):
         )
 
 
-async def stats(update, context):
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     con = db()
     cur = con.cursor()
@@ -234,7 +236,7 @@ async def stats(update, context):
     )
 
 
-async def block(update, context):
+async def block(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not is_admin(update.effective_user.id):
         return
@@ -255,7 +257,7 @@ async def block(update, context):
     await update.message.reply_text(f"🚫 Blocked {roll}")
 
 
-async def unblock(update, context):
+async def unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not is_admin(update.effective_user.id):
         return
@@ -278,7 +280,7 @@ async def unblock(update, context):
 
 # =============== UPLOAD ==================
 
-async def upload(update, context):
+async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not is_admin(update.effective_user.id):
         return
@@ -297,6 +299,9 @@ async def upload(update, context):
 
 def main():
 
+    if not BOT_TOKEN:
+        raise ValueError("❌ BOT_TOKEN not set in environment variables")
+
     init_db()
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -311,13 +316,10 @@ def main():
         MessageHandler(filters.Document.PDF, upload)
     )
 
-    # Start background worker safely
-    app.job_queue.run_once(
-        lambda ctx: asyncio.create_task(worker()),
-        when=1
-    )
+    # Start worker when app starts
+    app.post_init = lambda app: app.create_task(worker())
 
-    print("🤖 Bot Running")
+    print("🤖 Bot Running...")
 
     app.run_polling()
 
