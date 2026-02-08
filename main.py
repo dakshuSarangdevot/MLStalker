@@ -24,7 +24,7 @@ from selenium.common.exceptions import ElementClickInterceptedException
 # CONFIG
 # =========================================
 
-BOT_TOKEN = "7739387244:AAEMOHPjsZeJ95FbLjk-xoqy1LO5doYez98"
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
 
 HOME_URL = "https://mlsuexamination.sumsraj.com/default.aspx"
 
@@ -135,10 +135,7 @@ def run_navigation_test():
         driver = get_driver()
         wait = WebDriverWait(driver, WAIT_TIME)
 
-        # -------------------------------
         # STEP 1: Open Homepage
-        # -------------------------------
-
         logging.info("Opening homepage...")
 
         driver.get(HOME_URL)
@@ -146,10 +143,7 @@ def run_navigation_test():
         time.sleep(6)
 
 
-        # -------------------------------
         # STEP 2: Click Admit Card → View Details
-        # -------------------------------
-
         logging.info("Finding Admit Card View Details...")
 
         admit_btn = wait.until(EC.element_to_be_clickable((
@@ -164,10 +158,7 @@ def run_navigation_test():
         time.sleep(4)
 
 
-        # -------------------------------
         # STEP 3: Wait for Modal
-        # -------------------------------
-
         logging.info("Waiting for popup modal...")
 
         wait.until(EC.visibility_of_element_located((
@@ -178,10 +169,7 @@ def run_navigation_test():
         time.sleep(2)
 
 
-        # -------------------------------
         # STEP 4: Click Semester Link
-        # -------------------------------
-
         logging.info("Finding Semester link...")
 
         sem_link = wait.until(EC.presence_of_element_located((
@@ -196,24 +184,42 @@ def run_navigation_test():
         time.sleep(6)
 
 
-        # -------------------------------
-        # STEP 5: Wait for Table Data
-        # -------------------------------
+        # STEP 5: Wait for course rows (with retry)
+        logging.info("Waiting for course rows (with retry)...")
 
-        logging.info("Waiting for course rows...")
+        max_retries = 3
+        rows = []
 
-        wait.until(lambda d: len(
-            d.find_elements(By.XPATH, "//table//tr")
-        ) >= 9)
+        for attempt in range(max_retries):
 
-        rows = driver.find_elements(By.XPATH, "//table//tr")
+            try:
 
-        logging.info(f"Total rows loaded: {len(rows)}")
+                wait.until(lambda d: len(
+                    d.find_elements(By.XPATH, "//table//tr")
+                ) >= 8)
+
+                rows = driver.find_elements(By.XPATH, "//table//tr")
+
+                if len(rows) >= 8:
+
+                    logging.info(f"Rows loaded on attempt {attempt+1}")
+
+                    break
+
+            except Exception:
+
+                logging.warning(f"Rows not loaded. Retry {attempt+1}/{max_retries}")
+
+                driver.refresh()
+
+                time.sleep(6)
+
+        else:
+
+            return False, "Course list not loading. Possibly blocked by server."
 
 
-        # -------------------------------
-        # STEP 6: Find B.Sc Row (Text + Fallback)
-        # -------------------------------
+        # STEP 6: Find B.Sc Row (Smart + Fallback)
 
         try:
 
@@ -239,9 +245,7 @@ def run_navigation_test():
             logging.info("B.Sc row selected by index")
 
 
-        # -------------------------------
         # STEP 7: Click B.Sc "Click Here"
-        # -------------------------------
 
         bsc_link = bsc_row.find_element(
             By.XPATH,
@@ -257,9 +261,7 @@ def run_navigation_test():
         time.sleep(6)
 
 
-        # -------------------------------
         # STEP 8: Check Roll Form
-        # -------------------------------
 
         logging.info("Checking roll number form...")
 
@@ -273,10 +275,6 @@ def run_navigation_test():
             "//input[contains(@id,'Roll') or contains(@id,'roll')]"
         )))
 
-
-        # -------------------------------
-        # DONE
-        # -------------------------------
 
         return True, "Navigation completed. Roll form reached."
 
@@ -301,7 +299,7 @@ def run_navigation_test():
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
-        "🔍 Running full navigation test...\nPlease wait..."
+        "⏳ Running testing, please wait..."
     )
 
     ok, msg = run_navigation_test()
@@ -340,12 +338,9 @@ def main():
 
 if __name__ == "__main__":
 
-    # Start Flask for Render
     threading.Thread(
         target=run_flask,
         daemon=True
     ).start()
 
-    # Start Telegram Bot
     main()
-
