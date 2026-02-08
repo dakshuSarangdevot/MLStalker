@@ -1,346 +1,314 @@
-# =========================================
-# MLSU ROBUST NAVIGATION TEST BOT
-# =========================================
-
 import os
-import time
-import threading
+import re
+import sqlite3
 import logging
+import asyncio
 
-from flask import Flask
+import pdfplumber
 
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram import Update, Document
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
+)
 
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import ElementClickInterceptedException
-
-
-# =========================================
-# CONFIG
-# =========================================
+# ================= CONFIG =================
 
 BOT_TOKEN = "7739387244:AAEMOHPjsZeJ95FbLjk-xoqy1LO5doYez98"
+OWNER_ID = 8343668073
 
-HOME_URL = "https://mlsuexamination.sumsraj.com/default.aspx"
+DB_FILE = "data.db"
 
-WAIT_TIME = 50
-
-
-# =========================================
-# LOGGING
 # =========================================
 
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    level=logging.INFO
 )
 
+# ============ DATABASE ===================
 
-# =========================================
-# FLASK (KEEP RENDER ALIVE)
-# =========================================
+def init_db():
+    con = sqlite3.connect(DB_FILE)
+    cur = con.cursor()
 
-app = Flask(__name__)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS records(
+        id INTEGER PRIMARY KEY,
+        roll TEXT,
+        name TEXT,
+        file_id TEXT
+    )
+    """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS admins(
+        user_id INTEGER UNIQUE
+    )
+    """)
 
-@app.route("/")
-def home():
-    return "MLSU Test Bot Running"
+    cur.execute("INSERT OR IGNORE INTO admins VALUES(?)", (OWNER_ID,))
 
-
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
-
-
-# =========================================
-# SELENIUM SETUP
-# =========================================
-
-def get_driver():
-
-    opt = Options()
-
-    opt.add_argument("--headless=new")
-    opt.add_argument("--no-sandbox")
-    opt.add_argument("--disable-dev-shm-usage")
-    opt.add_argument("--window-size=1920,1080")
-    opt.add_argument("--disable-blink-features=AutomationControlled")
-
-    return webdriver.Chrome(options=opt)
+    con.commit()
+    con.close()
 
 
-# =========================================
-# SAFE CLICK FUNCTION
-# =========================================
+def db():
+    return sqlite3.connect(DB_FILE)
 
-def safe_click(driver, element, name="element"):
 
+# ============ HELPERS ===================
+
+def is_admin(uid):
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("SELECT 1 FROM admins WHERE user_id=?", (uid,))
+    r = cur.fetchone()
+
+    con.close()
+    return r is not None
+
+
+async def notify_owner(context, text):
     try:
+        await context.bot.send_message(OWNER_ID, text)
+    except:
+        pass
 
-        driver.execute_script(
-            "arguments[0].scrollIntoView({block:'center'});",
-            element
-        )
 
-        time.sleep(1)
+def extract_info(pdf_path):
 
-        element.click()
+    with pdfplumber.open(pdf_path) as pdf:
+        page = pdf.pages[0]
+        text = page.extract_text()
 
-        return True
+    roll = re.search(r"Roll No\.\s*:\s*(\d+)", text)
+    name = re.search(r"Candidate's Name\s*:\s*(.+)", text)
 
+    if not roll or not name:
+        return None, None
 
-    except ElementClickInterceptedException:
+    return roll.group(1).strip(), name.group(1).strip()
 
-        logging.warning(f"{name} click intercepted, using JS click")
 
-        try:
+# ============ COMMANDS ===================
 
-            driver.execute_script(
-                "arguments[0].click();",
-                element
-            )
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-            return True
+    msg = """
+🤖 MLSU Admit Card Bot
 
-        except Exception as e:
+🔍 Search:
+/find <roll/name>
 
-            logging.error(f"JS click failed on {name}: {e}")
+📊 Info:
+/stats
 
-            return False
+📤 Upload PDF (Admin only)
 
+👑 Admin:
+/makeadmin <id>
+/adminlist
+/clear
 
-    except Exception as e:
+⚡ Fast • Secure • Tracked
+"""
 
-        logging.error(f"Click failed on {name}: {e}")
+    await update.message.reply_text(msg)
 
-        return False
 
+async def find(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-# =========================================
-# MAIN NAVIGATION TEST
-# =========================================
+    user = update.effective_user
+    uid = user.id
+    name = user.full_name
 
-def run_navigation_test():
+    if not context.args:
+        await update.message.reply_text("Usage: /find <roll/name>")
+        return
 
-    driver = None
+    q = " ".join(context.args)
 
-    try:
-
-        driver = get_driver()
-        wait = WebDriverWait(driver, WAIT_TIME)
-
-        # STEP 1: Open Homepage
-        logging.info("Opening homepage...")
-
-        driver.get(HOME_URL)
-
-        time.sleep(6)
-
-
-        # STEP 2: Click Admit Card → View Details
-        logging.info("Finding Admit Card View Details...")
-
-        admit_btn = wait.until(EC.element_to_be_clickable((
-            By.XPATH,
-            "//div[contains(.,'Admit Card')]//a[contains(text(),'View Details')]"
-        )))
-
-        if not safe_click(driver, admit_btn, "Admit View Details"):
-
-            return False, "Failed to click Admit Card View Details"
-
-        time.sleep(4)
-
-
-        # STEP 3: Wait for Modal
-        logging.info("Waiting for popup modal...")
-
-        wait.until(EC.visibility_of_element_located((
-            By.CLASS_NAME,
-            "modal-content"
-        )))
-
-        time.sleep(2)
-
-
-        # STEP 4: Click Semester Link
-        logging.info("Finding Semester link...")
-
-        sem_link = wait.until(EC.presence_of_element_located((
-            By.XPATH,
-            "//a[contains(text(),'Semester')]"
-        )))
-
-        if not safe_click(driver, sem_link, "Semester Link"):
-
-            return False, "Failed to click Semester link"
-
-        time.sleep(6)
-
-
-        # STEP 5: Wait for course rows (with retry)
-        logging.info("Waiting for course rows (with retry)...")
-
-        max_retries = 3
-        rows = []
-
-        for attempt in range(max_retries):
-
-            try:
-
-                wait.until(lambda d: len(
-                    d.find_elements(By.XPATH, "//table//tr")
-                ) >= 8)
-
-                rows = driver.find_elements(By.XPATH, "//table//tr")
-
-                if len(rows) >= 8:
-
-                    logging.info(f"Rows loaded on attempt {attempt+1}")
-
-                    break
-
-            except Exception:
-
-                logging.warning(f"Rows not loaded. Retry {attempt+1}/{max_retries}")
-
-                driver.refresh()
-
-                time.sleep(6)
-
-        else:
-
-            return False, "Course list not loading. Possibly blocked by server."
-
-
-        # STEP 6: Find B.Sc Row (Smart + Fallback)
-
-        try:
-
-            logging.info("Searching B.Sc row by text...")
-
-            bsc_row = driver.find_element(
-                By.XPATH,
-                "//tr[td[contains(translate(text(),'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'B.SC')]]"
-            )
-
-            logging.info("B.Sc row found by text")
-
-
-        except Exception:
-
-            logging.warning("Text search failed. Using index fallback...")
-
-            if len(rows) < 8:
-                return False, "Not enough rows for fallback"
-
-            bsc_row = rows[7]
-
-            logging.info("B.Sc row selected by index")
-
-
-        # STEP 7: Click B.Sc "Click Here"
-
-        bsc_link = bsc_row.find_element(
-            By.XPATH,
-            ".//a[contains(text(),'Click')]"
-        )
-
-        logging.info("Clicking B.Sc link...")
-
-        if not safe_click(driver, bsc_link, "B.Sc Link"):
-
-            return False, "Failed to click B.Sc link"
-
-        time.sleep(6)
-
-
-        # STEP 8: Check Roll Form
-
-        logging.info("Checking roll number form...")
-
-        wait.until(EC.presence_of_element_located((
-            By.XPATH,
-            "//input[@type='text']"
-        )))
-
-        wait.until(EC.presence_of_element_located((
-            By.XPATH,
-            "//input[contains(@id,'Roll') or contains(@id,'roll')]"
-        )))
-
-
-        return True, "Navigation completed. Roll form reached."
-
-
-    except Exception as e:
-
-        logging.error("Navigation failed", exc_info=True)
-
-        return False, str(e)
-
-
-    finally:
-
-        if driver:
-            driver.quit()
-
-
-# =========================================
-# TELEGRAM COMMAND
-# =========================================
-
-async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    await update.message.reply_text(
-        "⏳ Running testing, please wait..."
+    # Notify owner
+    await notify_owner(
+        context,
+        f"🔍 Search Used\n\nUser: {name} ({uid})\nQuery: {q}"
     )
 
-    ok, msg = run_navigation_test()
+    con = db()
+    cur = con.cursor()
 
-    if ok:
+    cur.execute("""
+    SELECT name, roll, file_id FROM records
+    WHERE roll LIKE ? OR LOWER(name) LIKE ?
+    """, (f"%{q}%", f"%{q.lower()}%"))
 
-        await update.message.reply_text(
-            f"✅ SUCCESS\n\n{msg}"
+    rows = cur.fetchall()
+    con.close()
+
+    if not rows:
+        await update.message.reply_text("❌ Not found")
+        return
+
+    for n, r, fid in rows:
+
+        cap = f"👤 {n}\n🎫 Roll: {r}"
+
+        await context.bot.send_document(
+            chat_id=update.effective_chat.id,
+            document=fid,
+            caption=cap
         )
 
-    else:
 
-        await update.message.reply_text(
-            f"❌ FAILED\n\n{msg}"
-        )
+async def stats(update: Update, context):
 
+    con = db()
+    cur = con.cursor()
 
-# =========================================
-# BOT
-# =========================================
+    cur.execute("SELECT COUNT(*) FROM records")
+    total = cur.fetchone()[0]
 
-def main():
+    cur.execute("SELECT COUNT(*) FROM admins")
+    adm = cur.fetchone()[0]
 
-    bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
+    con.close()
 
-    bot_app.add_handler(CommandHandler("test", test))
-
-    logging.info("Navigation test bot started")
-
-    bot_app.run_polling()
+    await update.message.reply_text(
+        f"📊 Records: {total}\n👑 Admins: {adm}"
+    )
 
 
-# =========================================
-# MAIN
-# =========================================
+# ============ ADMIN ===================
+
+async def makeadmin(update: Update, context):
+
+    if update.effective_user.id != OWNER_ID:
+        return
+
+    if not context.args:
+        await update.message.reply_text("/makeadmin <id>")
+        return
+
+    uid = int(context.args[0])
+
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("INSERT OR IGNORE INTO admins VALUES(?)", (uid,))
+    con.commit()
+    con.close()
+
+    await update.message.reply_text("✅ Admin added")
+
+    await notify_owner(context, f"👑 New Admin: {uid}")
+
+
+async def adminlist(update, context):
+
+    if not is_admin(update.effective_user.id):
+        return
+
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("SELECT user_id FROM admins")
+    rows = cur.fetchall()
+    con.close()
+
+    txt = "👑 Admins:\n\n"
+
+    for r in rows:
+        txt += f"{r[0]}\n"
+
+    await update.message.reply_text(txt)
+
+
+async def clear(update, context):
+
+    if update.effective_user.id != OWNER_ID:
+        return
+
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("DELETE FROM records")
+    con.commit()
+    con.close()
+
+    await update.message.reply_text("🗑 Database cleared")
+
+    await notify_owner(context, "⚠️ Database cleared")
+
+
+# ============ UPLOADER ===================
+
+async def handle_pdf(update: Update, context):
+
+    if not is_admin(update.effective_user.id):
+        return
+
+    doc: Document = update.message.document
+
+    if not doc.file_name.lower().endswith(".pdf"):
+        return
+
+    file = await doc.get_file()
+
+    path = f"temp_{doc.file_unique_id}.pdf"
+
+    await file.download_to_drive(path)
+
+    roll, name = extract_info(path)
+
+    os.remove(path)
+
+    if not roll:
+        await update.message.reply_text("❌ Could not read PDF")
+        return
+
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+    INSERT OR REPLACE INTO records(roll,name,file_id)
+    VALUES(?,?,?)
+    """, (roll, name, doc.file_id))
+
+    con.commit()
+    con.close()
+
+    await update.message.reply_text(
+        f"✅ Saved: {name} ({roll})"
+    )
+
+
+# ============ MAIN ===================
+
+async def main():
+
+    init_db()
+
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("find", find))
+    app.add_handler(CommandHandler("stats", stats))
+
+    app.add_handler(CommandHandler("makeadmin", makeadmin))
+    app.add_handler(CommandHandler("adminlist", adminlist))
+    app.add_handler(CommandHandler("clear", clear))
+
+    app.add_handler(
+        MessageHandler(filters.Document.PDF, handle_pdf)
+    )
+
+    await app.run_polling()
+
 
 if __name__ == "__main__":
-
-    threading.Thread(
-        target=run_flask,
-        daemon=True
-    ).start()
-
-    main()
+    asyncio.run(main())
