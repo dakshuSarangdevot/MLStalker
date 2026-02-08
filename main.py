@@ -1,10 +1,11 @@
 import os
 import re
+import io
 import sqlite3
+import asyncio
 import logging
 import tempfile
-import asyncio
-import io
+import time
 
 import pdfplumber
 
@@ -30,26 +31,32 @@ DB_FILE = "data.db"
 MAX_QUEUE = 50
 AUTO_BACKUP_AFTER = 50
 
-# Google Drive Backup
+# Google Drive
 GDRIVE_KEY = "/etc/secrets/gdrive.json"
 GDRIVE_FOLDER = "BotBackups"
 
 # =========================================
 
+
 logging.basicConfig(level=logging.INFO)
 
 
-# =============== GLOBAL ==================
+# ============== GLOBAL ===================
 
 queue = asyncio.Queue()
 processed = 0
+last_backup_time = None
 
 
-# =============== DATABASE ================
+# ============== DATABASE =================
+
+def db():
+    return sqlite3.connect(DB_FILE)
+
 
 def init_db():
 
-    con = sqlite3.connect(DB_FILE)
+    con = db()
     cur = con.cursor()
 
     cur.execute("""
@@ -78,11 +85,7 @@ def init_db():
     con.close()
 
 
-def db():
-    return sqlite3.connect(DB_FILE)
-
-
-# =============== GOOGLE DRIVE ================
+# ============ GOOGLE DRIVE ================
 
 def get_drive():
 
@@ -111,6 +114,8 @@ def get_folder_id(service):
 
 def upload_db():
 
+    global last_backup_time
+
     try:
 
         service = get_drive()
@@ -131,10 +136,13 @@ def upload_db():
             media_body=media
         ).execute()
 
+        last_backup_time = time.strftime("%Y-%m-%d %H:%M:%S")
+
         return True
 
     except Exception as e:
-        logging.error(e)
+
+        logging.error("Backup failed: %s", e)
         return False
 
 
@@ -174,7 +182,8 @@ def download_db():
         return True
 
     except Exception as e:
-        logging.error(e)
+
+        logging.error("Restore failed: %s", e)
         return False
 
 
@@ -190,7 +199,7 @@ def startup_restore():
             print("⚠️ No backup found")
 
 
-# =============== HELPERS =================
+# ============== HELPERS ==================
 
 def is_admin(uid):
 
@@ -225,19 +234,19 @@ def extract_pdf(path):
         with pdfplumber.open(path) as pdf:
             text = pdf.pages[0].extract_text()
 
-        roll = re.search(r"Roll No\.\s*:\s*(\d+)", text)
-        name = re.search(r"Candidate's Name\s*:\s*(.+)", text)
+        roll = re.search(r"Roll\s*No\.?\s*:\s*(\d+)", text)
+        name = re.search(r"Name\s*:\s*(.+)", text)
 
         if not roll or not name:
             return None, None
 
-        return roll.group(1), name.group(1)
+        return roll.group(1), name.group(1).strip()
 
     except:
         return None, None
 
 
-# =============== WORKER ===================
+# ============== WORKER ===================
 
 async def worker(app):
 
@@ -254,6 +263,7 @@ async def worker(app):
             file = await app.bot.get_file(fid)
 
             with tempfile.NamedTemporaryFile(delete=False) as f:
+
                 await file.download_to_drive(f.name)
                 path = f.name
 
@@ -262,6 +272,7 @@ async def worker(app):
             os.remove(path)
 
             if not roll:
+
                 await update.message.reply_text("❌ Could not read PDF")
                 continue
 
@@ -279,29 +290,35 @@ async def worker(app):
 
             await update.message.reply_text(f"✅ Saved: {name}")
 
+            # Auto Backup
             if processed % AUTO_BACKUP_AFTER == 0:
 
                 if upload_db():
-                    await update.message.reply_text("☁️ Auto backup done")
+
+                    await context.bot.send_message(
+                        OWNER_ID,
+                        "☁️ Auto backup completed"
+                    )
 
         except Exception as e:
 
             logging.error(e)
+
             await update.message.reply_text("⚠️ Processing failed")
 
         queue.task_done()
 
 
-# =============== COMMANDS =================
+# ============== COMMANDS =================
 
 async def start(update, context):
 
     txt = """
-🤖 MLSU Admit Card Bot
+🤖 MLSU Admit Card Manager Bot
 
-━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━
 
-📤 Upload PDFs (Max 50)
+📤 Upload PDFs (Max 50 at once)
 🔍 /find <roll/name>
 📊 /stats
 
@@ -310,13 +327,17 @@ async def start(update, context):
 /removeadmin <id>
 /admins
 
-🚫 Block
+🚫 Control
 /block <roll>
 /unblock <roll>
 
-☁️ Auto Backup + Restore
+☁️ Backup
+/backup
+/backupstatus
 
-━━━━━━━━━━━━━━━
+💾 Auto Restore Enabled
+
+━━━━━━━━━━━━━━━━━━━━
 """
 
     await update.message.reply_text(txt)
@@ -334,11 +355,48 @@ async def stats(update, context):
 
     await update.message.reply_text(
         f"""
-📊 Status
+📊 Bot Status
 
 Records: {total}
 Queue: {queue.qsize()}
 Processed: {processed}
+Last Backup: {last_backup_time}
+"""
+    )
+
+
+async def backup(update, context):
+
+    if update.effective_user.id != OWNER_ID:
+        return
+
+    await update.message.reply_text("☁️ Uploading backup...")
+
+    if upload_db():
+
+        await update.message.reply_text("✅ Backup completed!")
+
+    else:
+
+        await update.message.reply_text("❌ Backup failed")
+
+
+async def backupstatus(update, context):
+
+    if not is_admin(update.effective_user.id):
+        return
+
+    size = "N/A"
+
+    if os.path.exists(DB_FILE):
+        size = f"{os.path.getsize(DB_FILE)//1024} KB"
+
+    await update.message.reply_text(
+        f"""
+☁️ Backup Status
+
+Last Backup: {last_backup_time}
+DB Size: {size}
 """
     )
 
@@ -376,7 +434,7 @@ async def find(update, context):
         )
 
 
-# =============== ADMIN ===================
+# ============== ADMIN ====================
 
 async def addadmin(update, context):
 
@@ -425,7 +483,7 @@ async def admins(update, context):
 
     con.close()
 
-    txt = "Admins:\n\n"
+    txt = "👑 Admins:\n\n"
 
     for r in rows:
         txt += f"{r[0]}\n"
@@ -467,7 +525,7 @@ async def unblock(update, context):
     await update.message.reply_text("✅ Unblocked")
 
 
-# =============== UPLOAD ==================
+# ============== UPLOAD ===================
 
 async def upload(update, context):
 
@@ -484,7 +542,7 @@ async def upload(update, context):
     await update.message.reply_text("📥 Queued")
 
 
-# =============== MAIN ===================
+# ============== MAIN =====================
 
 def main():
 
@@ -496,6 +554,9 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("find", find))
     app.add_handler(CommandHandler("stats", stats))
+
+    app.add_handler(CommandHandler("backup", backup))
+    app.add_handler(CommandHandler("backupstatus", backupstatus))
 
     app.add_handler(CommandHandler("addadmin", addadmin))
     app.add_handler(CommandHandler("removeadmin", removeadmin))
