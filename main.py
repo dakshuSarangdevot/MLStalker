@@ -17,8 +17,7 @@ from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 # ================= CONFIG =================
 
 # 🔴 PASTE YOUR BOT TOKEN INSIDE QUOTES
-BOT_TOKEN = "PASTE_YOUR_BOT_TOKEN_HERE"
-
+BOT_TOKEN = "7739387244:AAEMOHPjsZeJ95FbLjk-xoqy1LO5doYez98"
 # Your Telegram ID (already set)
 OWNER_ID = 8343668073
 
