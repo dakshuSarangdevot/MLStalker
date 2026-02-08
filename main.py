@@ -26,10 +26,11 @@ BOT_TOKEN = "7739387244:AAEMOHPjsZeJ95FbLjk-xoqy1LO5doYez98"
 OWNER_ID = 8343668073
 
 DB_FILE = "data.db"
+
 MAX_QUEUE = 50
 AUTO_BACKUP_AFTER = 50
 
-# Google Drive
+# Google Drive Backup
 GDRIVE_KEY = "/etc/secrets/gdrive.json"
 GDRIVE_FOLDER = "BotBackups"
 
@@ -132,7 +133,8 @@ def upload_db():
 
         return True
 
-    except:
+    except Exception as e:
+        logging.error(e)
         return False
 
 
@@ -171,7 +173,8 @@ def download_db():
 
         return True
 
-    except:
+    except Exception as e:
+        logging.error(e)
         return False
 
 
@@ -259,7 +262,7 @@ async def worker(app):
             os.remove(path)
 
             if not roll:
-                await update.message.reply_text("❌ Read failed")
+                await update.message.reply_text("❌ Could not read PDF")
                 continue
 
             con = db()
@@ -274,7 +277,7 @@ async def worker(app):
 
             processed += 1
 
-            await update.message.reply_text(f"✅ {name}")
+            await update.message.reply_text(f"✅ Saved: {name}")
 
             if processed % AUTO_BACKUP_AFTER == 0:
 
@@ -284,7 +287,7 @@ async def worker(app):
         except Exception as e:
 
             logging.error(e)
-            await update.message.reply_text("⚠️ Failed")
+            await update.message.reply_text("⚠️ Processing failed")
 
         queue.task_done()
 
@@ -311,7 +314,7 @@ async def start(update, context):
 /block <roll>
 /unblock <roll>
 
-☁️ Auto Backup
+☁️ Auto Backup + Restore
 
 ━━━━━━━━━━━━━━━
 """
@@ -483,7 +486,7 @@ async def upload(update, context):
 
 # =============== MAIN ===================
 
-async def main():
+def main():
 
     startup_restore()
     init_db()
@@ -505,12 +508,15 @@ async def main():
         MessageHandler(filters.Document.PDF, upload)
     )
 
-    asyncio.create_task(worker(app))
+    async def start_worker(app):
+        asyncio.create_task(worker(app))
+
+    app.post_init = start_worker
 
     print("🤖 Bot Running")
 
-    await app.run_polling()
+    app.run_polling()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
