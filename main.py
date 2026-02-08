@@ -1,6 +1,5 @@
-
 # =========================================
-# MLSU FULL NAVIGATION TEST BOT (ROBUST)
+# MLSU ROBUST NAVIGATION TEST BOT
 # =========================================
 
 import os
@@ -29,7 +28,7 @@ BOT_TOKEN = "7739387244:AAEMOHPjsZeJ95FbLjk-xoqy1LO5doYez98"
 
 HOME_URL = "https://mlsuexamination.sumsraj.com/default.aspx"
 
-WAIT_TIME = 45
+WAIT_TIME = 50
 
 
 # =========================================
@@ -51,7 +50,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "MLSU Robust Test Bot Running"
+    return "MLSU Test Bot Running"
 
 
 def run_flask():
@@ -64,7 +63,9 @@ def run_flask():
 # =========================================
 
 def get_driver():
+
     opt = Options()
+
     opt.add_argument("--headless=new")
     opt.add_argument("--no-sandbox")
     opt.add_argument("--disable-dev-shm-usage")
@@ -75,36 +76,54 @@ def get_driver():
 
 
 # =========================================
-# SAFE CLICK
+# SAFE CLICK FUNCTION
 # =========================================
 
 def safe_click(driver, element, name="element"):
 
     try:
-        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", element)
+
+        driver.execute_script(
+            "arguments[0].scrollIntoView({block:'center'});",
+            element
+        )
+
         time.sleep(1)
+
         element.click()
+
         return True
+
 
     except ElementClickInterceptedException:
 
-        logging.warning(f"{name} click intercepted. Using JS click.")
+        logging.warning(f"{name} click intercepted, using JS click")
 
         try:
-            driver.execute_script("arguments[0].click();", element)
+
+            driver.execute_script(
+                "arguments[0].click();",
+                element
+            )
+
             return True
+
         except Exception as e:
+
             logging.error(f"JS click failed on {name}: {e}")
+
             return False
+
 
     except Exception as e:
 
         logging.error(f"Click failed on {name}: {e}")
+
         return False
 
 
 # =========================================
-# NAVIGATION TEST
+# MAIN NAVIGATION TEST
 # =========================================
 
 def run_navigation_test():
@@ -116,12 +135,21 @@ def run_navigation_test():
         driver = get_driver()
         wait = WebDriverWait(driver, WAIT_TIME)
 
-        # STEP 1: Open Home
-        logging.info("Opening homepage...")
-        driver.get(HOME_URL)
-        time.sleep(5)
+        # -------------------------------
+        # STEP 1: Open Homepage
+        # -------------------------------
 
-        # STEP 2: Click Admit Card View Details
+        logging.info("Opening homepage...")
+
+        driver.get(HOME_URL)
+
+        time.sleep(6)
+
+
+        # -------------------------------
+        # STEP 2: Click Admit Card → View Details
+        # -------------------------------
+
         logging.info("Finding Admit Card View Details...")
 
         admit_btn = wait.until(EC.element_to_be_clickable((
@@ -130,11 +158,16 @@ def run_navigation_test():
         )))
 
         if not safe_click(driver, admit_btn, "Admit View Details"):
+
             return False, "Failed to click Admit Card View Details"
 
-        time.sleep(3)
+        time.sleep(4)
 
+
+        # -------------------------------
         # STEP 3: Wait for Modal
+        # -------------------------------
+
         logging.info("Waiting for popup modal...")
 
         wait.until(EC.visibility_of_element_located((
@@ -144,8 +177,12 @@ def run_navigation_test():
 
         time.sleep(2)
 
+
+        # -------------------------------
         # STEP 4: Click Semester Link
-        logging.info("Finding Semester Examination link...")
+        # -------------------------------
+
+        logging.info("Finding Semester link...")
 
         sem_link = wait.until(EC.presence_of_element_located((
             By.XPATH,
@@ -153,36 +190,78 @@ def run_navigation_test():
         )))
 
         if not safe_click(driver, sem_link, "Semester Link"):
+
             return False, "Failed to click Semester link"
 
-        time.sleep(5)
+        time.sleep(6)
 
-        # STEP 5: Wait for Course Table
-        logging.info("Waiting for course table...")
 
-        table = wait.until(EC.presence_of_element_located((
-            By.TAG_NAME,
-            "table"
-        )))
+        # -------------------------------
+        # STEP 5: Wait for Table Data
+        # -------------------------------
 
-        rows = table.find_elements(By.TAG_NAME, "tr")
+        logging.info("Waiting for course rows...")
 
-        if len(rows) < 7:
-            return False, f"Only {len(rows)} rows found (expected 7+)"
+        wait.until(lambda d: len(
+            d.find_elements(By.XPATH, "//table//tr")
+        ) >= 9)
 
-        # STEP 6: Click 7th Row
-        logging.info("Selecting 7th course row...")
+        rows = driver.find_elements(By.XPATH, "//table//tr")
 
-        row7 = rows[6]
-        link = row7.find_element(By.TAG_NAME, "a")
+        logging.info(f"Total rows loaded: {len(rows)}")
 
-        if not safe_click(driver, link, "7th Course Link"):
-            return False, "Failed to click 7th course link"
 
-        time.sleep(5)
+        # -------------------------------
+        # STEP 6: Find B.Sc Row (Text + Fallback)
+        # -------------------------------
 
-        # STEP 7: Check Roll Form
-        logging.info("Checking roll form...")
+        try:
+
+            logging.info("Searching B.Sc row by text...")
+
+            bsc_row = driver.find_element(
+                By.XPATH,
+                "//tr[td[contains(translate(text(),'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'),'B.SC')]]"
+            )
+
+            logging.info("B.Sc row found by text")
+
+
+        except Exception:
+
+            logging.warning("Text search failed. Using index fallback...")
+
+            if len(rows) < 8:
+                return False, "Not enough rows for fallback"
+
+            bsc_row = rows[7]
+
+            logging.info("B.Sc row selected by index")
+
+
+        # -------------------------------
+        # STEP 7: Click B.Sc "Click Here"
+        # -------------------------------
+
+        bsc_link = bsc_row.find_element(
+            By.XPATH,
+            ".//a[contains(text(),'Click')]"
+        )
+
+        logging.info("Clicking B.Sc link...")
+
+        if not safe_click(driver, bsc_link, "B.Sc Link"):
+
+            return False, "Failed to click B.Sc link"
+
+        time.sleep(6)
+
+
+        # -------------------------------
+        # STEP 8: Check Roll Form
+        # -------------------------------
+
+        logging.info("Checking roll number form...")
 
         wait.until(EC.presence_of_element_located((
             By.XPATH,
@@ -194,12 +273,18 @@ def run_navigation_test():
             "//input[contains(@id,'Roll') or contains(@id,'roll')]"
         )))
 
+
+        # -------------------------------
+        # DONE
+        # -------------------------------
+
         return True, "Navigation completed. Roll form reached."
 
 
     except Exception as e:
 
         logging.error("Navigation failed", exc_info=True)
+
         return False, str(e)
 
 
@@ -215,14 +300,23 @@ def run_navigation_test():
 
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    await update.message.reply_text("🔍 Running robust navigation test...")
+    await update.message.reply_text(
+        "🔍 Running full navigation test...\nPlease wait..."
+    )
 
     ok, msg = run_navigation_test()
 
     if ok:
-        await update.message.reply_text(f"✅ SUCCESS\n\n{msg}")
+
+        await update.message.reply_text(
+            f"✅ SUCCESS\n\n{msg}"
+        )
+
     else:
-        await update.message.reply_text(f"❌ FAILED\n\n{msg}")
+
+        await update.message.reply_text(
+            f"❌ FAILED\n\n{msg}"
+        )
 
 
 # =========================================
@@ -235,7 +329,7 @@ def main():
 
     bot_app.add_handler(CommandHandler("test", test))
 
-    logging.info("Robust test bot started")
+    logging.info("Navigation test bot started")
 
     bot_app.run_polling()
 
@@ -246,7 +340,12 @@ def main():
 
 if __name__ == "__main__":
 
-    threading.Thread(target=run_flask, daemon=True).start()
+    # Start Flask for Render
+    threading.Thread(
+        target=run_flask,
+        daemon=True
+    ).start()
 
+    # Start Telegram Bot
     main()
 
