@@ -4,8 +4,10 @@ import sqlite3
 import logging
 import tempfile
 import asyncio
+import threading
 
 import pdfplumber
+from flask import Flask
 
 from telegram import Update
 from telegram.ext import (
@@ -18,17 +20,30 @@ from telegram.ext import (
 
 # ================= CONFIG =================
 
-# Set this in Render Environment Variables
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-
+BOT_TOKEN = os.getenv("BOT_TOKEN")   # Set in Render Env
 OWNER_ID = 8343668073
 
 DB_FILE = "data.db"
 MAX_QUEUE = 50
 
+PORT = int(os.environ.get("PORT", 10000))
+
 # =========================================
 
 logging.basicConfig(level=logging.INFO)
+
+# =============== FLASK SERVER (FOR RENDER) ================
+
+app_web = Flask(__name__)
+
+@app_web.route("/")
+def home():
+    return "Telegram Bot is Running ✅"
+
+
+def run_web():
+    app_web.run(host="0.0.0.0", port=PORT)
+
 
 # =============== DATABASE ================
 
@@ -177,8 +192,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 🚫 Admin
 /block /unblock
-
-⚡ Stable System
 """
 
     await update.message.reply_text(txt)
@@ -308,6 +321,9 @@ def main():
     if not BOT_TOKEN:
         raise ValueError("❌ BOT_TOKEN not set in environment variables")
 
+    # Start Flask in background thread
+    threading.Thread(target=run_web, daemon=True).start()
+
     init_db()
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -322,10 +338,9 @@ def main():
         MessageHandler(filters.Document.PDF, upload)
     )
 
-    # Start worker safely
     app.post_init = post_init
 
-    print("🤖 Bot Running...")
+    print("🤖 Bot + Web Server Running...")
 
     app.run_polling()
 
