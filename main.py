@@ -18,7 +18,7 @@ from telegram.ext import (
 
 # ================= CONFIG =================
 
-# ⚠️ Put your real token in Render Environment Variable
+# Set this in Render Environment Variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 OWNER_ID = 8343668073
@@ -295,6 +295,12 @@ async def upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📥 Added to queue")
 
 
+# =============== START WORKER =================
+
+async def post_init(app):
+    app.create_task(worker())
+
+
 # =============== MAIN ===================
 
 def main():
@@ -316,8 +322,8 @@ def main():
         MessageHandler(filters.Document.PDF, upload)
     )
 
-    # Start worker when app starts
-    app.post_init = lambda app: app.create_task(worker())
+    # Start worker safely
+    app.post_init = post_init
 
     print("🤖 Bot Running...")
 
