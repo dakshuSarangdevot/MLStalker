@@ -2,7 +2,6 @@ import os
 import re
 import sqlite3
 import logging
-import asyncio
 
 import pdfplumber
 
@@ -32,6 +31,7 @@ logging.basicConfig(
 # ============ DATABASE ===================
 
 def init_db():
+
     con = sqlite3.connect(DB_FILE)
     cur = con.cursor()
 
@@ -63,6 +63,7 @@ def db():
 # ============ HELPERS ===================
 
 def is_admin(uid):
+
     con = db()
     cur = con.cursor()
 
@@ -74,6 +75,7 @@ def is_admin(uid):
 
 
 async def notify_owner(context, text):
+
     try:
         await context.bot.send_message(OWNER_ID, text)
     except:
@@ -83,6 +85,7 @@ async def notify_owner(context, text):
 def extract_info(pdf_path):
 
     with pdfplumber.open(pdf_path) as pdf:
+
         page = pdf.pages[0]
         text = page.extract_text()
 
@@ -125,7 +128,7 @@ async def find(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = update.effective_user
     uid = user.id
-    name = user.full_name
+    uname = user.full_name
 
     if not context.args:
         await update.message.reply_text("Usage: /find <roll/name>")
@@ -133,10 +136,10 @@ async def find(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     q = " ".join(context.args)
 
-    # Notify owner
+    # Notify Owner
     await notify_owner(
         context,
-        f"🔍 Search Used\n\nUser: {name} ({uid})\nQuery: {q}"
+        f"🔍 Search Used\nUser: {uname} ({uid})\nQuery: {q}"
     )
 
     con = db()
@@ -289,7 +292,7 @@ async def handle_pdf(update: Update, context):
 
 # ============ MAIN ===================
 
-async def main():
+def main():
 
     init_db()
 
@@ -307,8 +310,10 @@ async def main():
         MessageHandler(filters.Document.PDF, handle_pdf)
     )
 
-    await app.run_polling()
+    print("🤖 Bot Started Successfully")
+
+    app.run_polling()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
