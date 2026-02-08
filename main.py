@@ -31,6 +31,7 @@ logging.basicConfig(level=logging.INFO)
 # =============== DATABASE ================
 
 def init_db():
+
     con = sqlite3.connect(DB_FILE)
     cur = con.cursor()
 
@@ -115,7 +116,7 @@ def extract_pdf(path):
 queue = asyncio.Queue()
 
 
-async def worker(app):
+async def worker():
 
     while True:
 
@@ -134,7 +135,7 @@ async def worker(app):
             os.remove(path)
 
             if not roll:
-                await update.message.reply_text("❌ Read failed")
+                await update.message.reply_text("❌ Could not read PDF")
                 continue
 
             con = db()
@@ -151,8 +152,8 @@ async def worker(app):
 
         except Exception as e:
 
-            await update.message.reply_text("⚠️ Failed to process file")
             logging.error(e)
+            await update.message.reply_text("⚠️ Processing failed")
 
         queue.task_done()
 
@@ -164,15 +165,15 @@ async def start(update, context):
     txt = """
 🤖 MLSU Admit Card Bot
 
-📤 Forward PDFs (Max 50 at once)
+📤 Forward PDFs (Max 50)
 
-🔍 Search:
+🔍 Search
 /find <roll/name>
 
-📊 Info:
+📊 Info
 /stats
 
-🚫 Admin:
+🚫 Admin
 /block /unblock
 
 ⚡ Stable System
@@ -285,14 +286,16 @@ async def upload(update, context):
     if queue.qsize() >= MAX_QUEUE:
         return await update.message.reply_text("⚠️ Queue full. Wait.")
 
-    await queue.put((update, context, update.message.document.file_id))
+    await queue.put(
+        (update, context, update.message.document.file_id)
+    )
 
     await update.message.reply_text("📥 Added to queue")
 
 
 # =============== MAIN ===================
 
-async def main():
+def main():
 
     init_db()
 
@@ -308,12 +311,16 @@ async def main():
         MessageHandler(filters.Document.PDF, upload)
     )
 
-    asyncio.create_task(worker(app))
+    # Start background worker safely
+    app.job_queue.run_once(
+        lambda ctx: asyncio.create_task(worker()),
+        when=1
+    )
 
     print("🤖 Bot Running")
 
-    await app.run_polling()
+    app.run_polling()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
