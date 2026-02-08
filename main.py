@@ -2,9 +2,8 @@ import os
 import re
 import sqlite3
 import logging
-import asyncio
 import tempfile
-import time
+import asyncio
 
 import pdfplumber
 
@@ -21,16 +20,15 @@ from telegram.ext import (
 
 BOT_TOKEN = "7739387244:AAEMOHPjsZeJ95FbLjk-xoqy1LO5doYez98"
 OWNER_ID = 8343668073
-CHANNEL_ID = -1003702608871
 
 DB_FILE = "data.db"
-BATCH_SIZE = 50
+MAX_QUEUE = 50
 
 # =========================================
 
 logging.basicConfig(level=logging.INFO)
 
-# ============ DATABASE ===================
+# =============== DATABASE ================
 
 def init_db():
     con = sqlite3.connect(DB_FILE)
@@ -56,14 +54,7 @@ def init_db():
     )
     """)
 
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS progress(
-        last_id INTEGER
-    )
-    """)
-
     cur.execute("INSERT OR IGNORE INTO admins VALUES(?)", (OWNER_ID,))
-    cur.execute("INSERT OR IGNORE INTO progress VALUES(0)")
 
     con.commit()
     con.close()
@@ -73,23 +64,31 @@ def db():
     return sqlite3.connect(DB_FILE)
 
 
-# ============ HELPERS ===================
+# =============== HELPERS =================
 
 def is_admin(uid):
+
     con = db()
     cur = con.cursor()
+
     cur.execute("SELECT 1 FROM admins WHERE uid=?", (uid,))
     r = cur.fetchone()
+
     con.close()
+
     return r is not None
 
 
 def is_blocked(roll):
+
     con = db()
     cur = con.cursor()
+
     cur.execute("SELECT 1 FROM blocked WHERE roll=?", (roll,))
     r = cur.fetchone()
+
     con.close()
+
     return r is not None
 
 
@@ -111,36 +110,76 @@ def extract_pdf(path):
         return None, None
 
 
-# ============ UI ===================
+# =============== QUEUE ===================
+
+queue = asyncio.Queue()
+
+
+async def worker(app):
+
+    while True:
+
+        update, context, file_id = await queue.get()
+
+        try:
+
+            file = await context.bot.get_file(file_id)
+
+            with tempfile.NamedTemporaryFile(delete=False) as f:
+                await file.download_to_drive(f.name)
+                path = f.name
+
+            roll, name = extract_pdf(path)
+
+            os.remove(path)
+
+            if not roll:
+                await update.message.reply_text("❌ Read failed")
+                continue
+
+            con = db()
+            cur = con.cursor()
+
+            cur.execute("""
+            INSERT OR REPLACE INTO records VALUES(?,?,?)
+            """, (roll, name, file_id))
+
+            con.commit()
+            con.close()
+
+            await update.message.reply_text(f"✅ Saved: {name}")
+
+        except Exception as e:
+
+            await update.message.reply_text("⚠️ Failed to process file")
+            logging.error(e)
+
+        queue.task_done()
+
+
+# =============== COMMANDS =================
 
 async def start(update, context):
 
     txt = """
 🤖 MLSU Admit Card Bot
 
-🔍 Search
-/find <roll or name>
+📤 Forward PDFs (Max 50 at once)
 
-📊 Info
+🔍 Search:
+/find <roll/name>
+
+📊 Info:
 /stats
 
-🔄 Recovery
-/reindex
-/status
-
-🚫 Admin
+🚫 Admin:
 /block /unblock
-/admins
 
-📤 Upload PDFs (Admin)
-
-⚡ Stable • Secure • 24/7
+⚡ Stable System
 """
 
     await update.message.reply_text(txt)
 
-
-# ============ SEARCH ===================
 
 async def find(update, context):
 
@@ -166,7 +205,7 @@ async def find(update, context):
     for n, r, f in rows:
 
         if is_blocked(r):
-            await update.message.reply_text(f"🚫 {r} is blocked")
+            await update.message.reply_text(f"🚫 {r} blocked")
             continue
 
         await context.bot.send_document(
@@ -175,8 +214,6 @@ async def find(update, context):
             caption=f"👤 {n}\n🎫 {r}"
         )
 
-
-# ============ STATS ===================
 
 async def stats(update, context):
 
@@ -189,35 +226,11 @@ async def stats(update, context):
     cur.execute("SELECT COUNT(*) FROM blocked")
     blk = cur.fetchone()[0]
 
-    cur.execute("SELECT last_id FROM progress")
-    prog = cur.fetchone()[0]
-
     con.close()
 
     await update.message.reply_text(
-        f"📊 Records: {total}\n🚫 Blocked: {blk}\n📌 Progress: {prog}"
+        f"📊 Records: {total}\n🚫 Blocked: {blk}\n📥 Queue: {queue.qsize()}"
     )
-
-
-# ============ ADMIN ===================
-
-async def admins(update, context):
-
-    if not is_admin(update.effective_user.id):
-        return
-
-    con = db()
-    cur = con.cursor()
-    cur.execute("SELECT uid FROM admins")
-
-    rows = cur.fetchall()
-    con.close()
-
-    txt = "👑 Admins:\n\n"
-    for r in rows:
-        txt += str(r[0]) + "\n"
-
-    await update.message.reply_text(txt)
 
 
 async def block(update, context):
@@ -232,7 +245,9 @@ async def block(update, context):
 
     con = db()
     cur = con.cursor()
+
     cur.execute("INSERT OR IGNORE INTO blocked VALUES(?)", (roll,))
+
     con.commit()
     con.close()
 
@@ -251,128 +266,33 @@ async def unblock(update, context):
 
     con = db()
     cur = con.cursor()
+
     cur.execute("DELETE FROM blocked WHERE roll=?", (roll,))
+
     con.commit()
     con.close()
 
     await update.message.reply_text(f"✅ Unblocked {roll}")
 
 
-# ============ UPLOAD ===================
+# =============== UPLOAD ==================
 
 async def upload(update, context):
 
     if not is_admin(update.effective_user.id):
         return
 
-    doc = update.message.document
-    file = await doc.get_file()
+    if queue.qsize() >= MAX_QUEUE:
+        return await update.message.reply_text("⚠️ Queue full. Wait.")
 
-    with tempfile.NamedTemporaryFile(delete=False) as f:
-        await file.download_to_drive(f.name)
-        path = f.name
+    await queue.put((update, context, update.message.document.file_id))
 
-    roll, name = extract_pdf(path)
-    os.remove(path)
-
-    if not roll:
-        return await update.message.reply_text("❌ Read failed")
-
-    con = db()
-    cur = con.cursor()
-
-    cur.execute("""
-    INSERT OR REPLACE INTO records VALUES(?,?,?)
-    """, (roll, name, doc.file_id))
-
-    con.commit()
-    con.close()
-
-    await update.message.reply_text(f"✅ Saved {name}")
+    await update.message.reply_text("📥 Added to queue")
 
 
-# ============ REINDEX ===================
+# =============== MAIN ===================
 
-async def reindex(update, context):
-
-    if not is_admin(update.effective_user.id):
-        return
-
-    msg = await update.message.reply_text("🔄 Reindex started...")
-
-    con = db()
-    cur = con.cursor()
-    cur.execute("SELECT last_id FROM progress")
-    last = cur.fetchone()[0]
-    con.close()
-
-    count = 0
-    processed = 0
-
-    async for m in context.bot.get_chat_history(CHANNEL_ID, limit=3000):
-
-        if m.id <= last:
-            continue
-
-        if not m.document:
-            continue
-
-        if not m.document.file_name.lower().endswith(".pdf"):
-            continue
-
-        try:
-            file = await m.document.get_file()
-
-            with tempfile.NamedTemporaryFile(delete=False) as f:
-                await file.download_to_drive(f.name)
-                path = f.name
-
-            roll, name = extract_pdf(path)
-            os.remove(path)
-
-            if roll:
-
-                con = db()
-                cur = con.cursor()
-
-                cur.execute("""
-                INSERT OR REPLACE INTO records VALUES(?,?,?)
-                """, (roll, name, m.document.file_id))
-
-                cur.execute("UPDATE progress SET last_id=?", (m.id,))
-
-                con.commit()
-                con.close()
-
-                count += 1
-
-        except:
-            pass
-
-        processed += 1
-
-        if processed >= BATCH_SIZE:
-            break
-
-    await msg.edit_text(
-        f"✅ Batch done\nProcessed: {processed}\nSaved: {count}"
-    )
-
-
-async def status(update, context):
-
-    con = db()
-    cur = con.cursor()
-    cur.execute("SELECT last_id FROM progress")
-    p = cur.fetchone()[0]
-    con.close()
-
-    await update.message.reply_text(f"📌 Last message: {p}")
-
-
-# ============ MAIN ===================
-
-def main():
+async def main():
 
     init_db()
 
@@ -381,11 +301,6 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("find", find))
     app.add_handler(CommandHandler("stats", stats))
-
-    app.add_handler(CommandHandler("reindex", reindex))
-    app.add_handler(CommandHandler("status", status))
-
-    app.add_handler(CommandHandler("admins", admins))
     app.add_handler(CommandHandler("block", block))
     app.add_handler(CommandHandler("unblock", unblock))
 
@@ -393,10 +308,12 @@ def main():
         MessageHandler(filters.Document.PDF, upload)
     )
 
+    asyncio.create_task(worker(app))
+
     print("🤖 Bot Running")
 
-    app.run_polling()
+    await app.run_polling()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
