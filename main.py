@@ -40,8 +40,8 @@ logging.basicConfig(level=logging.INFO)
 
 # =============== GLOBAL ==================
 
-processed_counter = 0
 queue = asyncio.Queue()
+processed = 0
 
 
 # =============== DATABASE ================
@@ -103,73 +103,88 @@ def get_folder_id(service):
     items = res.get("files", [])
 
     if not items:
-        raise Exception("Backup folder not found")
+        return None
 
     return items[0]["id"]
 
 
 def upload_db():
 
-    service = get_drive()
-    folder = get_folder_id(service)
+    try:
 
-    media = MediaFileUpload(DB_FILE)
+        service = get_drive()
+        folder = get_folder_id(service)
 
-    meta = {
-        "name": "data_backup.db",
-        "parents": [folder]
-    }
+        if not folder:
+            return False
 
-    service.files().create(
-        body=meta,
-        media_body=media
-    ).execute()
+        media = MediaFileUpload(DB_FILE)
+
+        meta = {
+            "name": "data_backup.db",
+            "parents": [folder]
+        }
+
+        service.files().create(
+            body=meta,
+            media_body=media
+        ).execute()
+
+        return True
+
+    except:
+        return False
 
 
 def download_db():
 
-    service = get_drive()
-    folder = get_folder_id(service)
+    try:
 
-    res = service.files().list(
-        q=f"name='data_backup.db' and '{folder}' in parents",
-        spaces="drive"
-    ).execute()
+        service = get_drive()
+        folder = get_folder_id(service)
 
-    items = res.get("files", [])
+        if not folder:
+            return False
 
-    if not items:
+        res = service.files().list(
+            q=f"name='data_backup.db' and '{folder}' in parents",
+            spaces="drive"
+        ).execute()
+
+        items = res.get("files", [])
+
+        if not items:
+            return False
+
+        file_id = items[0]["id"]
+
+        req = service.files().get_media(fileId=file_id)
+
+        fh = io.FileIO(DB_FILE, "wb")
+
+        downloader = MediaIoBaseDownload(fh, req)
+
+        done = False
+
+        while not done:
+            _, done = downloader.next_chunk()
+
+        return True
+
+    except:
         return False
-
-    file_id = items[0]["id"]
-
-    req = service.files().get_media(fileId=file_id)
-
-    fh = io.FileIO(DB_FILE, "wb")
-
-    downloader = MediaIoBaseDownload(fh, req)
-
-    done = False
-
-    while not done:
-        _, done = downloader.next_chunk()
-
-    return True
 
 
 def startup_restore():
 
     if not os.path.exists(DB_FILE):
 
-        print("📦 Restoring DB from Drive...")
+        print("📦 Trying restore...")
 
-        try:
-            if download_db():
-                print("✅ Restore complete")
-            else:
-                print("⚠️ No backup found")
-        except Exception as e:
-            print("❌ Restore failed:", e)
+        if download_db():
+            print("✅ Restored")
+        else:
+            print("⚠️ No backup found")
 
 
 # =============== HELPERS =================
@@ -203,6 +218,7 @@ def is_blocked(roll):
 def extract_pdf(path):
 
     try:
+
         with pdfplumber.open(path) as pdf:
             text = pdf.pages[0].extract_text()
 
@@ -220,17 +236,19 @@ def extract_pdf(path):
 
 # =============== WORKER ===================
 
-async def worker():
+async def worker(app):
 
-    global processed_counter
+    global processed
+
+    print("⚙️ Worker started")
 
     while True:
 
-        update, context, file_id = await queue.get()
+        update, context, fid = await queue.get()
 
         try:
 
-            file = await context.bot.get_file(file_id)
+            file = await app.bot.get_file(fid)
 
             with tempfile.NamedTemporaryFile(delete=False) as f:
                 await file.download_to_drive(f.name)
@@ -249,23 +267,19 @@ async def worker():
 
             cur.execute("""
             INSERT OR REPLACE INTO records VALUES(?,?,?)
-            """, (roll, name, file_id))
+            """, (roll, name, fid))
 
             con.commit()
             con.close()
 
-            processed_counter += 1
+            processed += 1
 
-            await update.message.reply_text(f"✅ Saved: {name}")
+            await update.message.reply_text(f"✅ {name}")
 
-            # Auto backup every 50
-            if processed_counter % AUTO_BACKUP_AFTER == 0:
+            if processed % AUTO_BACKUP_AFTER == 0:
 
-                upload_db()
-
-                await update.message.reply_text(
-                    "☁️ Auto backup completed"
-                )
+                if upload_db():
+                    await update.message.reply_text("☁️ Auto backup done")
 
         except Exception as e:
 
@@ -279,44 +293,27 @@ async def worker():
 
 async def start(update, context):
 
-    txt = f"""
-🤖 MLSU Admit Card Management Bot
+    txt = """
+🤖 MLSU Admit Card Bot
 
-━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━
 
-📤 UPLOAD
-• Forward PDFs (Max 50 at once)
-• Bot auto extracts Name + Roll
-• Saves permanently
+📤 Upload PDFs (Max 50)
+🔍 /find <roll/name>
+📊 /stats
 
-🔍 SEARCH
-/find <roll or name>
-
-📊 STATS
-/stats
-
-🚫 BLOCK SYSTEM
-/block <roll>
-/unblock <roll>
-
-👑 ADMIN SYSTEM
+👑 Admin
 /addadmin <id>
 /removeadmin <id>
 /admins
 
-☁️ CLOUD BACKUP
-• Auto backup every 50 files
-• Manual: /backup
-• Restore: /restore
+🚫 Block
+/block <roll>
+/unblock <roll>
 
-🛡️ SAFETY
-✔ Crash Proof
-✔ Resume Support
-✔ No Data Loss
+☁️ Auto Backup
 
-Owner: {OWNER_ID}
-
-━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━
 """
 
     await update.message.reply_text(txt)
@@ -330,23 +327,15 @@ async def stats(update, context):
     cur.execute("SELECT COUNT(*) FROM records")
     total = cur.fetchone()[0]
 
-    cur.execute("SELECT COUNT(*) FROM admins")
-    admins = cur.fetchone()[0]
-
-    cur.execute("SELECT COUNT(*) FROM blocked")
-    blk = cur.fetchone()[0]
-
     con.close()
 
     await update.message.reply_text(
         f"""
-📊 BOT STATUS
+📊 Status
 
 Records: {total}
-Admins: {admins}
-Blocked: {blk}
 Queue: {queue.qsize()}
-Processed: {processed_counter}
+Processed: {processed}
 """
     )
 
@@ -354,7 +343,7 @@ Processed: {processed_counter}
 async def find(update, context):
 
     if not context.args:
-        return await update.message.reply_text("Use: /find <roll/name>")
+        return await update.message.reply_text("Use /find <roll/name>")
 
     q = " ".join(context.args).lower()
 
@@ -380,7 +369,7 @@ async def find(update, context):
         await context.bot.send_document(
             update.effective_chat.id,
             f,
-            caption=f"👤 {n}\n🎫 {r}"
+            caption=f"{n} | {r}"
         )
 
 
@@ -389,9 +378,6 @@ async def find(update, context):
 async def addadmin(update, context):
 
     if update.effective_user.id != OWNER_ID:
-        return
-
-    if not context.args:
         return
 
     uid = int(context.args[0])
@@ -403,15 +389,12 @@ async def addadmin(update, context):
     con.commit()
     con.close()
 
-    await update.message.reply_text(f"✅ Added admin {uid}")
+    await update.message.reply_text("✅ Admin added")
 
 
 async def removeadmin(update, context):
 
     if update.effective_user.id != OWNER_ID:
-        return
-
-    if not context.args:
         return
 
     uid = int(context.args[0])
@@ -423,7 +406,7 @@ async def removeadmin(update, context):
     con.commit()
     con.close()
 
-    await update.message.reply_text(f"❌ Removed admin {uid}")
+    await update.message.reply_text("❌ Admin removed")
 
 
 async def admins(update, context):
@@ -436,9 +419,10 @@ async def admins(update, context):
 
     cur.execute("SELECT uid FROM admins")
     rows = cur.fetchall()
+
     con.close()
 
-    txt = "👑 Admins:\n\n"
+    txt = "Admins:\n\n"
 
     for r in rows:
         txt += f"{r[0]}\n"
@@ -460,7 +444,7 @@ async def block(update, context):
     con.commit()
     con.close()
 
-    await update.message.reply_text(f"🚫 Blocked {roll}")
+    await update.message.reply_text("🚫 Blocked")
 
 
 async def unblock(update, context):
@@ -477,30 +461,7 @@ async def unblock(update, context):
     con.commit()
     con.close()
 
-    await update.message.reply_text(f"✅ Unblocked {roll}")
-
-
-# =============== BACKUP ===================
-
-async def backup(update, context):
-
-    if update.effective_user.id != OWNER_ID:
-        return
-
-    upload_db()
-
-    await update.message.reply_text("☁️ Backup saved")
-
-
-async def restore(update, context):
-
-    if update.effective_user.id != OWNER_ID:
-        return
-
-    if download_db():
-        await update.message.reply_text("✅ Restored. Restart bot.")
-    else:
-        await update.message.reply_text("⚠️ No backup found")
+    await update.message.reply_text("✅ Unblocked")
 
 
 # =============== UPLOAD ==================
@@ -517,12 +478,12 @@ async def upload(update, context):
         (update, context, update.message.document.file_id)
     )
 
-    await update.message.reply_text("📥 Added to queue")
+    await update.message.reply_text("📥 Queued")
 
 
 # =============== MAIN ===================
 
-def main():
+async def main():
 
     startup_restore()
     init_db()
@@ -540,22 +501,16 @@ def main():
     app.add_handler(CommandHandler("block", block))
     app.add_handler(CommandHandler("unblock", unblock))
 
-    app.add_handler(CommandHandler("backup", backup))
-    app.add_handler(CommandHandler("restore", restore))
-
     app.add_handler(
         MessageHandler(filters.Document.PDF, upload)
     )
 
-    app.job_queue.run_once(
-        lambda ctx: asyncio.create_task(worker()),
-        when=2
-    )
+    asyncio.create_task(worker(app))
 
     print("🤖 Bot Running")
 
-    app.run_polling()
+    await app.run_polling()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
